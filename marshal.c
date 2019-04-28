@@ -49,114 +49,62 @@ unsigned char magic_header[] = MAGIC_COOKIE;
 
 static int big_endian=0;
 
-#define TYPE_DOUBLE 14
-#define TYPE_INT8 15
-#define TYPE_INT16 16
-#define TYPE_INT32 17
+#define NUMTYPE_DOUBLE 31
+#define NUMTYPE_UINT32 30
+#define NUMTYPE_UINT24 29
+#define NUMTYPE_UINT16 28
+#define NUMTYPE_UINT8 27
 
-static unsigned int encode_num(double src, uint8_t *dst)
-{
-    int32_t trunc = src;
-    if ((double)trunc != src) {
-	*dst++ = TYPE_DOUBLE;
-	if (big_endian) {
-	    union { double in; uint64_t out; } pun = { .in = src };
-	    pun.out = bswap_64(pun.out);
-	    memcpy(dst, &pun.out, 8);
-	} else
-	    memcpy(dst, &src, sizeof(src));
-	return 9;
-    }
-    if ( trunc > -15 && trunc < 14 ) {
-	*dst = trunc & 0x01F;
-	return 1;
-    }
-    if (trunc >= -128 && trunc < 128) {
-	*dst = TYPE_INT8;
-	dst[1] = trunc & 0xFF;
-	return 2;
-    }
-    if (trunc >= -32768 && trunc < 32768) {
-	*dst = TYPE_INT16;
-	dst[1] = trunc & 0xFF;
-	dst[2] = (trunc>>8) & 0xFF;
-	return 3;
-    } 
-    *dst = TYPE_INT32;
-    if (big_endian)
-	trunc = bswap_32(trunc);
-    memcpy(dst+1, &trunc, 4);
-    return 5;
-}
+#define SEEN_OBJECT_IDX 3
+#define SEEN_UPVALUE_IDX 4
 
-static int decode_num(const uint8_t *src, double *dst, size_t available)
-{
-    switch (src[0]) {
-    case TYPE_DOUBLE: {
-	if (available < 9) return 0;
-	union { uint64_t in; double out; } pun;
-	memcpy(&pun.in, src+1, sizeof(pun.in));
-	if (big_endian)
-	    pun.in = bswap_64(pun.in);
-	*dst = pun.out;
-	return 9;
-    };
-    case TYPE_INT8:
-	if (available < 2) return 0;
-	*dst = *(int8_t *)&src[1];
-	return 2;
-    case TYPE_INT16: {
-	if (available < 3) return 0;
-	int16_t val = src[2] << 8 | src[1];
-	*dst = val;
-	return 3;
-    }
-    case TYPE_INT32: {
-	if (available < 5) return 0;
-	int32_t val;
-	memcpy(&val, src+1, sizeof(val));
-	if (big_endian)
-	    val = bswap_32(val);
-	*dst = val;
-	return 5;
-    }
-    default:
-	if (available < 1) return 0;
-	*dst = *(int8_t *)src;
-	return 1;
-    }
-}
+// Explicit constants and special headers
+#define ALLOCATE_REFS 64
+#define MERGE_DUPL_STRS 65
+#define TABLE_END 66
+#define LUA_CLOSURE 67
+#define CONSTRUCTOR 68
 
-#define TYPE_UINT32 31
-#define TYPE_UINT24 30
-#define TYPE_UINT16 29
-#define TYPE_UINT8 28
+#define VALUE_NIL 69
+#define VALUE_FALSE 70
+#define VALUE_TRUE 71
+
+#define STRLIT(VAL) (char []){VAL}
+
+// Types aside from constants ()
+#define TYPE_NUMBER 0
+#define TYPE_NEGATIVE_INT 32
+#define TYPE_STRING 96
+#define TYPE_REF 128
+#define TYPE_TABLE 160
+#define TYPE_UVREF 192
+#define TYPE_UINT 224
 
 static unsigned int encode_uint(uint32_t src, uint8_t type, uint8_t *dst)
 {
-    if (src < 28) {
+    if (src < 27) {
 	*dst = type | src;
 	return 1;
     }
     if (src < 256) {
-	*dst = type | TYPE_UINT8;
+	*dst = type | NUMTYPE_UINT8;
 	dst[1] = src;
 	return 2;
     }
     if (src < 65536) {
-	*dst = type | TYPE_UINT16;
+	*dst = type | NUMTYPE_UINT16;
 	dst[1] = src & 0xFF;
 	dst[2] = src >> 8;
 	return 3;
     }
     if (src < 1<<24) {
-	*dst = type | TYPE_UINT24;
+	*dst = type | NUMTYPE_UINT24;
 	dst[1] = src & 0xFF;
 	dst[2] = src >> 8 & 0xFF;
 	dst[3] = src >> 16;
 	return 4;
     }
-    *dst = type | TYPE_UINT32;
+    *dst = type | NUMTYPE_UINT32;
     if (big_endian)
 	src = bswap_32(src);
     memcpy(dst+1, &src, 4);
@@ -171,19 +119,19 @@ static int decode_uint(const uint8_t *src, uint32_t *dst,
     *type = *src & 0xE0;
     
     switch(src[0] & 0x1F) {
-    case TYPE_UINT8:
+    case NUMTYPE_UINT8:
 	if (available < 2) return 0;
 	*dst = src[1];
 	return 2;
-    case TYPE_UINT16:
+    case NUMTYPE_UINT16:
 	if (available < 3) return 0;
 	*dst = src[2] << 8 | src[1];
 	return 3;
-    case TYPE_UINT24:
+    case NUMTYPE_UINT24:
 	if (available < 4) return 0;
 	*dst = (src[3]<<8 | src[2])<<8 | src[1];
 	return 4;
-    case TYPE_UINT32:
+    case NUMTYPE_UINT32:
 	if (available < 5) return 0;
 	memcpy(dst, src+1, 4);
 	if (big_endian)
@@ -195,45 +143,47 @@ static int decode_uint(const uint8_t *src, uint32_t *dst,
     }
 }
 
-#define SEEN_OBJECT_IDX 3
-#define SEEN_UPVALUE_IDX 4
-
-// Explicit constants and special headers
-#define ALLOCATE_REFS 32
-#define MERGE_DUPL_STRS 33
-#define TABLE_END 34
-#define LUA_CLOSURE 35
-#define CONSTRUCTOR 36
-
-#define VALUE_NIL 37
-#define VALUE_FALSE 38
-#define VALUE_TRUE 39
-
-#define STRLIT(VAL) (char []){VAL}
-
-// Types aside from constants (32-63)
-#define TYPE_NUMBER 0
-#define TYPE_STRING 64
-#define TYPE_REF 96
-#define TYPE_TABLE 128
-#define TYPE_UVREF 160
-#define TYPE_UINT 192
-
-static int bcwriter(lua_State *L, const void *p, size_t sz, void *buf)
+static unsigned int encode_num(double src, uint8_t *dst)
 {
-    luaL_addlstring(buf, p, sz);
-    return 0;
+    double posnum = fabs(src);
+    uint32_t trunc = posnum;
+    if ((double)trunc != posnum) {
+	*dst++ = NUMTYPE_DOUBLE;
+	if (big_endian) {
+	    union { double in; uint64_t out; } pun = { .in = src };
+	    pun.out = bswap_64(pun.out);
+	    memcpy(dst, &pun.out, 8);
+	} else
+	    memcpy(dst, &src, sizeof(src));
+	return 9;
+    }
+    return encode_uint(trunc, src < 0 ? TYPE_NEGATIVE_INT : TYPE_NUMBER, dst);
 }
 
-static int push_bytecode(lua_State *L)
+static unsigned int decode_num(const uint8_t *src, double *dst,
+			       size_t available)
 {
-    luaL_Buffer bcbuf;
-
-    return 1;
+    if (src[0] == NUMTYPE_DOUBLE) {
+	if (available < 9) return 0;
+	union { uint64_t in; double out; } pun;
+	memcpy(&pun.in, src+1, sizeof(pun.in));
+	if (big_endian)
+	    pun.in = bswap_64(pun.in);
+	*dst = pun.out;
+	return 9;
+    }
+    uint32_t u32dst;
+    uint8_t type;
+    unsigned int len = decode_uint(src, &u32dst, &type, available);
+    if (len > 0)
+	*dst = type == TYPE_NUMBER ? u32dst : -1.0*u32dst;
+    return len;
 }
 
-int use_or_make_ref(lua_State *L, int index,
-		    unsigned int *seen_object_count, luaL_Buffer *catbuf)
+
+static int use_or_make_ref(lua_State *L, int index,
+			   unsigned int *seen_object_count,
+			   luaL_Buffer *catbuf)
 {
     uint8_t numbuf[9];
     size_t len;
@@ -490,17 +440,17 @@ static void decode_recursive(lua_State *L,
     case VALUE_NIL:
 	lua_pushnil(L);
 	++*src;
-	(*available)--;
+	--*available;
 	return;
     case VALUE_FALSE:
     case VALUE_TRUE:
 	lua_pushboolean(L, **src == VALUE_TRUE);
 	++*src;
-	(*available)--;
+	--*available;
 	return;
     case LUA_CLOSURE:
 	++*src;
-	(*available)--;
+	--*available;
 	int code_position = ++*seen_object_count;
 	size_t codelen;
 	const char *code;
@@ -510,7 +460,7 @@ static void decode_recursive(lua_State *L,
 	    code = lua_tolstring(L, -1, &codelen);
 	} else {
 	    codelen = decode_string_header(L, src, available);
-	    code = *src;
+	    code = (const char *)*src;
 	    *src += codelen;
 	    *available -= codelen;
 	}
@@ -559,7 +509,8 @@ static void decode_recursive(lua_State *L,
 	}
 	if (**src != TABLE_END || !*available)
 	    luaL_error(L, "Can't find end of table");
-	--*available; ++*src;
+	++*src;
+	--*available;
 	return;
     case CONSTRUCTOR:
 	++*src;
@@ -571,7 +522,8 @@ static void decode_recursive(lua_State *L,
     }
     
     switch (**src & 0xE0) {
-    case TYPE_NUMBER: { // Number type.
+    case TYPE_NUMBER:
+    case TYPE_NEGATIVE_INT: { // Number type.
 	double result;
 	int used = decode_num(*src, &result, *available);
 	if (!used) {
@@ -579,14 +531,14 @@ static void decode_recursive(lua_State *L,
 	    // This never runs, but the compiler flags the out-param otherwise.
 	    return;
 	}
-	*available -= used;
 	*src += used;
+	*available -= used;
 	lua_pushnumber(L, result);
 	break;
     }
     case TYPE_STRING: {
 	uint32_t len = decode_string_header(L, src, available);
-	lua_pushlstring(L, *src, len);
+	lua_pushlstring(L, (const char *)*src, len);
 	*src += len;
 	*available -= len;
 	if (merge_dupl_strs) {
@@ -600,8 +552,8 @@ static void decode_recursive(lua_State *L,
 	uint8_t type;
 	int used = decode_uint(*src, &result, &type, *available);
 	if (!used) luaL_error(L, end_of_data);
-	*available -= used;
 	*src += used;
+	*available -= used;
 	lua_createtable(L, result, 0);
 	lua_pushvalue(L, -1);
 	lua_rawseti(L, SEEN_OBJECT_IDX, ++*seen_object_count);
@@ -619,7 +571,8 @@ static void decode_recursive(lua_State *L,
 	}
 	if (**src != TABLE_END || !*available)
 	    luaL_error(L, "Can't find end of table");
-	--*available; (*src)++;
+	++*src;
+	--*available;
 	break;
     }
     case TYPE_REF: {
@@ -627,8 +580,8 @@ static void decode_recursive(lua_State *L,
 	uint8_t type;
 	int used = decode_uint(*src, &result, &type, *available);
 	if (!used) luaL_error(L, end_of_data);
-	*available -= used;
 	*src += used;
+	*available -= used;
 	lua_rawgeti(L, SEEN_OBJECT_IDX, result);
 	break;
     }
