@@ -1,7 +1,7 @@
 Fast serialization for Lua
 ==========================
 
-local marshal = require "marshal"
+local marshal = require "newmarshal"
 
 Provides:
 ---------

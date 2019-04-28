@@ -588,7 +588,6 @@ static void decode_recursive(lua_State *L,
     default:
 	luaL_error(L, invalid_data);
     }
-	
 }
 
 static int decode(lua_State *L)
@@ -661,7 +660,7 @@ static int clone(lua_State *L)
     return decode(L);
 }
 
-LUALIB_API int luaopen_marshal(lua_State *L)
+LUALIB_API int luaopen_newmarshal(lua_State *L)
 {
     // Detect endianness.  Bizarre byte sex is not supported.
     union { uint32_t in; uint8_t out[sizeof(uint32_t)]; } pun = { .in = 1 };

@@ -1,11 +1,15 @@
 CFLAGS+=-fPIC -I /usr/local/include/luajit-2.0 -I/usr/local/include
 CFLAGS+=-Wall -Wno-parentheses -O2 -mtune=generic -std=c99
 CFLAGS+=-D_POSIX_C_SOURCE=200112L
-LDFLAGS+=-lluajit -lpthread -lm
+LDFLAGS+=-lpthread -lm
 
-.PHONY: all clean
+.PHONY: all test clean
 
-all: marshal.so
+test: newmarshal.so
+	lua test.lua
+
+
+all: newmarshal.so
 	lua test.lua
 
 %.so: %.o 

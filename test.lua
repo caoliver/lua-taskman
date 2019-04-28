@@ -1,4 +1,4 @@
-local marshal = package.loadlib('./marshal.so', 'luaopen_marshal')()
+local marshal = package.loadlib('./newmarshal.so', 'luaopen_newmarshal')()
 
 local k = { "tkey" }
 local a = { "a", "b", "c", [k] = "tval" }
