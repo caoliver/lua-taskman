@@ -1,4 +1,4 @@
-Fast compact serialization for Lua
+Fast and compact serialization for Lua
 ==========================
 
 local freezer = require "freezer"
@@ -10,6 +10,22 @@ Provides:
 * t = freezer.thaw(s[, constants])      - deserializes a byte stream to a value
 * t = freezer.clone(orig[, constants])  - deep clone a value (deep for tables
                                           and functions)
+
+
+Features:
+---------
+
+Serializes tables, which may contain cycles, Lua functions with upvalues and
+basic data types.
+
+All functions take an optional constants table which, if encountered during
+serialization, are simply referenced from the constants table passed during
+deserialization. For example:
+
+    local orig = { answer = 42, print = print }
+    local pack = freezer.freeze(orig, { print })
+    local copy = freezer.thaw(pack, { print })
+    assert(copy.print == print)
 
 The freezer.freeze function takes an optional third and forth boolean
 argument.  When the third argument is true all duplicates of a given string
@@ -31,22 +47,6 @@ Freezer provides Lua C API style calls as:
     freezer_thaw(lua_State *L);
 
 There is no C API for clone.
-
-Features:
----------
-
-Serializes tables, which may contain cycles, Lua functions with upvalues and
-basic data types.
-
-All functions take an optional constants table which, if encountered during
-serialization, are simply referenced from the constants table passed during
-deserialization. For example:
-
-    local orig = { answer = 42, print = print }
-    local pack = freezer.freeze(orig, { print })
-    local copy = freezer.thaw(pack, { print })
-    assert(copy.print == print)
-
 
 Hooks
 -----
@@ -93,7 +93,10 @@ support for userdata the `__freeze` metatable hook can be used.
 
 Metatables and function environments are not serialized.
 
-Attempt to serialize threads, C functions, and userdata without a `__freeze`
-hook raises an exception.
+Attempt to serialize threads, C functions, cdata (LuaJIT), and userdata
+that contains no `__freeze` hook raises an exception.
 
 Serialized code may not be portable.
+
+Credits: test.lua and most of this document come from Richard Hundt's
+work in lua-marshal.
