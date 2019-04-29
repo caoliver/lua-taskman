@@ -1,5 +1,7 @@
 CFLAGS+=-fPIC -I /usr/local/include/luajit-2.0 -I/usr/local/include
-CFLAGS+=-Wall -Wno-parentheses -O2 -mtune=generic -std=c99
+CFLAGS+=-Wall -Wno-parentheses -O2 -std=c99
+CFLAGS+=-mtune=generic
+#CFLAGS+=-march=native -mfloat-abi=hard
 CFLAGS+=-D_POSIX_C_SOURCE=200112L
 LDFLAGS+=-lpthread -lm
 
