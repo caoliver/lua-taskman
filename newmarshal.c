@@ -39,6 +39,7 @@
 #include <lualib.h>
 #include <lauxlib.h>
 #include <assert.h>
+#include <limits.h>
 
 // Do you want to start the serialization with a magic cookie?
 // #define MAGIC_COOKIE { 'L', 'M', 'S', 'H' }
@@ -49,14 +50,94 @@ unsigned char magic_header[] = MAGIC_COOKIE;
 
 static int big_endian=0;
 
+struct buffer {
+    lua_State *L;
+    char buf[BUFSIZ > 16384 ? 8192 : BUFSIZ];
+    char *ptr;
+    unsigned int depth;
+};
+
+static void buf_buffinit(lua_State *L, struct buffer *buf)
+{
+    buf->L = L;
+    buf->ptr = buf->buf;
+    buf->depth = 0;
+}
+
+#define SEEN_OBJECT_IDX 3
+#define SEEN_UPVALUE_IDX 4
+#define STRING_ACCUMULATOR 5
+
+static void buf_addlstring(struct buffer *buf, const char *str, size_t len)
+{
+    while (len > 0) {
+	size_t remaining = buf->buf + sizeof(buf->buf) - buf->ptr;
+	if (len > remaining) {
+	    memcpy(buf->ptr, str, remaining);
+	    lua_pushlstring(buf->L, buf->buf, sizeof(buf->buf));
+	    lua_rawseti(buf->L, STRING_ACCUMULATOR, ++buf->depth);
+	    str += remaining;
+	    len -= remaining;
+	    buf->ptr = buf->buf;
+	} else {
+	    memcpy(buf->ptr, str, len);
+	    buf->ptr += len;
+	    break;
+	}
+    }
+}
+
+#define CONCAT_SIZE 8
+static void buf_pushresult(struct buffer *buf)
+{
+    lua_State *L = buf->L;
+    lua_pushlstring(L, buf->buf, buf->ptr - buf->buf);
+    int depth = buf->depth;
+    if (depth==0)
+	return;
+    lua_rawseti(L, STRING_ACCUMULATOR, ++depth);
+
+    int tsrc = STRING_ACCUMULATOR;
+
+    if (depth > CONCAT_SIZE) {
+	lua_newtable(L);
+	int tdst = lua_gettop(L);
+	while (depth > CONCAT_SIZE) {
+	    int dst = 1, count = 0;
+	    for (int src=1; src <= depth; src++) {
+		lua_rawgeti(L, tsrc, src);
+		lua_pushnil(L);
+		lua_rawseti(L, tsrc, src);
+		if (++count >= CONCAT_SIZE) {
+		    lua_concat(L, CONCAT_SIZE); 
+		    lua_rawseti(L, tdst, dst++);
+		    count = 0;
+		}
+	    }
+	    if (count) {
+		lua_concat(L, count);
+		lua_rawseti(L, tdst, dst++);
+	    }
+	    int tmp = tsrc;
+	    tsrc = tdst;
+	    tdst = tmp;
+	    depth = dst - 1;
+	}
+    }
+
+    for (int i = 1; i <= depth; i++) {
+	lua_rawgeti(L, tsrc, i);
+	lua_pushnil(L);
+	lua_rawseti(L, tsrc, i);
+    }
+    lua_concat(L, depth);
+}
+
 #define NUMTYPE_DOUBLE 31
 #define NUMTYPE_UINT32 30
 #define NUMTYPE_UINT24 29
 #define NUMTYPE_UINT16 28
 #define NUMTYPE_UINT8 27
-
-#define SEEN_OBJECT_IDX 3
-#define SEEN_UPVALUE_IDX 4
 
 // Explicit constants and special headers
 #define ALLOCATE_REFS 64
@@ -183,7 +264,7 @@ static unsigned int decode_num(const uint8_t *src, double *dst,
 
 static int use_or_make_ref(lua_State *L, int index,
 			   unsigned int *seen_object_count,
-			   luaL_Buffer *catbuf)
+			   struct buffer *catbuf)
 {
     uint8_t numbuf[9];
     size_t len;
@@ -192,7 +273,7 @@ static int use_or_make_ref(lua_State *L, int index,
     lua_rawget(L, SEEN_OBJECT_IDX);
     if (!lua_isnil(L, -1)) {
 	len = encode_uint(lua_tointeger(L, -1), TYPE_REF, numbuf);
-	luaL_addlstring(catbuf, (void *)numbuf, len);
+	buf_addlstring(catbuf, (void *)numbuf, len);
 	lua_pop(L, 1);
 	return 1;
     }
@@ -210,7 +291,7 @@ static void encode_recursive(lua_State *L,
 			     int index,
 			     unsigned int *seen_object_count,
 			     unsigned int *seen_upvalue_count,
-			     luaL_Buffer *catbuf,
+			     struct buffer *catbuf,
 			     bool merge_dupl_strs,
 			     bool strip_debug)
 {
@@ -223,10 +304,10 @@ static void encode_recursive(lua_State *L,
     
     switch(lua_type(L, index)) {
     case LUA_TNIL:
-	luaL_addlstring(catbuf, STRLIT(VALUE_NIL), 1);
+	buf_addlstring(catbuf, STRLIT(VALUE_NIL), 1);
 	break;
     case LUA_TBOOLEAN:
-	luaL_addlstring(catbuf,
+	buf_addlstring(catbuf,
 			lua_toboolean(L, index)
 			? STRLIT(VALUE_TRUE)
 			: STRLIT(VALUE_FALSE),
@@ -234,16 +315,16 @@ static void encode_recursive(lua_State *L,
 	break;
     case LUA_TNUMBER:
 	len = encode_num(lua_tonumber(L, index), numbuf);
-	luaL_addlstring(catbuf, (void *)numbuf, len);
+	buf_addlstring(catbuf, (void *)numbuf, len);
 	break;
     case LUA_TSTRING:
 	if (!merge_dupl_strs ||
 	    !use_or_make_ref(L, index, seen_object_count, catbuf)) {
 	    len = lua_objlen(L, index);
 	    len = encode_uint(len, TYPE_STRING, numbuf);
-	    luaL_addlstring(catbuf, (void *)numbuf, len);
+	    buf_addlstring(catbuf, (void *)numbuf, len);
 	    const char *str = lua_tolstring(L, index, &len);
-	    luaL_addlstring(catbuf, str, len);
+	    buf_addlstring(catbuf, str, len);
 	}
 	break;
     case LUA_TTABLE:
@@ -253,13 +334,13 @@ static void encode_recursive(lua_State *L,
 		lua_call(L, 1, 1);
 		if (!lua_isfunction(L, -1) || lua_iscfunction(L,-1))
 		    luaL_error(L, bad_make_restore);
-		luaL_addlstring(catbuf, STRLIT(CONSTRUCTOR), 1);
+		buf_addlstring(catbuf, STRLIT(CONSTRUCTOR), 1);
 		encode_recursive(L, -1, seen_object_count, seen_upvalue_count,
 				 catbuf, merge_dupl_strs, strip_debug);
 	    } else {
 		unsigned int array_size = lua_objlen(L, index);
 		len = encode_uint(array_size, TYPE_TABLE, numbuf);
-		luaL_addlstring(catbuf, (void *)numbuf, len);
+		buf_addlstring(catbuf, (void *)numbuf, len);
 		for (int i = 1; i <= array_size; i++) {
 		    lua_rawgeti(L, index, i);
 		    encode_recursive(L, -1, seen_object_count,
@@ -282,7 +363,7 @@ static void encode_recursive(lua_State *L,
 				     merge_dupl_strs, strip_debug);
 		    lua_pop(L, 1);
 		}
-		luaL_addlstring(catbuf, STRLIT(TABLE_END), 1);
+		buf_addlstring(catbuf, STRLIT(TABLE_END), 1);
 	    }
 	}
 	break;
@@ -294,7 +375,7 @@ static void encode_recursive(lua_State *L,
 	    lua_call(L, 1, 1);
 	    if (!lua_isfunction(L, -1) || lua_iscfunction(L,-1))
 		luaL_error(L, bad_make_restore);
-	    luaL_addlstring(catbuf, STRLIT(CONSTRUCTOR), 1);
+	    buf_addlstring(catbuf, STRLIT(CONSTRUCTOR), 1);
 	    encode_recursive(L, -1, seen_object_count, seen_upvalue_count,
 			     catbuf, merge_dupl_strs, strip_debug);
 	}
@@ -303,7 +384,7 @@ static void encode_recursive(lua_State *L,
 	if (!use_or_make_ref(L, index, seen_object_count, catbuf)) {
 	    if (lua_iscfunction(L, index))
 		luaL_error(L, "Can't serialize a C function.");
-	    luaL_addlstring(catbuf, STRLIT(LUA_CLOSURE), 1);
+	    buf_addlstring(catbuf, STRLIT(LUA_CLOSURE), 1);
 	    lua_pushvalue(L, index);
 	    lua_pushboolean(L, strip_debug);
 	    lua_pushvalue(L, lua_upvalueindex(1));
@@ -321,7 +402,7 @@ static void encode_recursive(lua_State *L,
 		if (!lua_isnil(L, -1)) {
 		    len =
 			encode_uint(lua_tointeger(L, -1), TYPE_UVREF, numbuf);
-		    luaL_addlstring(catbuf, (void *)numbuf, len);
+		    buf_addlstring(catbuf, (void *)numbuf, len);
 		    lua_pop(L, 2);
 		} else {
 		    lua_pop(L, 1);
@@ -329,7 +410,7 @@ static void encode_recursive(lua_State *L,
 		    lua_pushinteger(L, ++*seen_upvalue_count);
 		    lua_rawset(L, SEEN_UPVALUE_IDX);
 		    len = encode_uint(upvalue_index, TYPE_UINT, numbuf);
-		    luaL_addlstring(catbuf, (void *)numbuf, len);
+		    buf_addlstring(catbuf, (void *)numbuf, len);
 		    encode_recursive(L, -1, seen_object_count,
 				     seen_upvalue_count, catbuf,
 				     merge_dupl_strs, strip_debug);
@@ -337,7 +418,7 @@ static void encode_recursive(lua_State *L,
 		}
 		upvalue_index++;
 	    }
-	    luaL_addlstring(catbuf, STRLIT(TABLE_END), 1);
+	    buf_addlstring(catbuf, STRLIT(TABLE_END), 1);
 	}
 	break;
     default:
@@ -362,27 +443,28 @@ static int encode(lua_State *L)
 
     lua_newtable(L); // Seen object table
     lua_newtable(L); // Seen upvalue table
+    lua_newtable(L); // String accumulator
     unsigned int seen_object_count = 0;
     unsigned int seen_upvalue_count = 0;
 
-    luaL_Buffer catbuf;
-    luaL_buffinit (L, &catbuf);
+    struct buffer catbuf;
+    buf_buffinit (L, &catbuf);
 
 #ifdef MAGIC_COOKIE
-    luaL_addlstring(&catbuf, (void *)magic_header, sizeof(magic_header));
+    buf_addlstring(&catbuf, (void *)magic_header, sizeof(magic_header));
 #endif
     
     if (merge_dupl_strs)
-	luaL_addlstring(&catbuf, STRLIT(MERGE_DUPL_STRS), 1);
+	buf_addlstring(&catbuf, STRLIT(MERGE_DUPL_STRS), 1);
 
     // Build initial seen objects
     seen_object_count = lua_objlen(L, 2);
     if (seen_object_count > 0) {
 	uint8_t numbuf[9];
 	
-	luaL_addlstring(&catbuf, STRLIT(ALLOCATE_REFS), 1);
+	buf_addlstring(&catbuf, STRLIT(ALLOCATE_REFS), 1);
 	int len = encode_uint(seen_object_count, TYPE_UINT, numbuf);
-	luaL_addlstring(&catbuf, (void *)numbuf, len);
+	buf_addlstring(&catbuf, (void *)numbuf, len);
 
 	for (unsigned int i = 1; i <= seen_object_count; i++) {
 	    lua_rawgeti(L, 2, i);
@@ -403,8 +485,7 @@ static int encode(lua_State *L)
 		     merge_dupl_strs,
 		     strip_debug);
 
-    lua_pop(L, 1);
-    luaL_pushresult(&catbuf);
+    buf_pushresult(&catbuf);
     return 1;
 }
 
