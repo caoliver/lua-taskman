@@ -1,6 +1,6 @@
 /*********************************************************************/
-/* Marshal a serializer/deserializer for Lua values inspired by	     */
-/* Richard Hundt's lmarshal and various readings on CBOR.	     */
+/* Freezer a serializer/deserializer for Lua values inspired by	     */
+/* Richard Hundt's lmarshal and the compactness of CBOR.	     */
 /* 								     */
 /* License: MIT							     */
 /* 								     */
@@ -161,7 +161,7 @@ static void buf_pushresult(struct buffer *buf)
 #define TYPE_UVREF 192
 #define TYPE_UINT 224
 
-static unsigned int encode_uint(uint32_t src, uint8_t type, uint8_t *dst)
+static unsigned int freeze_uint(uint32_t src, uint8_t type, uint8_t *dst)
 {
     if (src < 27) {
 	*dst = type | src;
@@ -192,8 +192,8 @@ static unsigned int encode_uint(uint32_t src, uint8_t type, uint8_t *dst)
     return 5;
 }
 
-static int decode_uint(const uint8_t *src, uint32_t *dst,
-		       uint8_t *type, size_t available)
+static int thaw_uint(const uint8_t *src, uint32_t *dst,
+		     uint8_t *type, size_t available)
 
 {
     if (available < 1) return 0;
@@ -224,7 +224,7 @@ static int decode_uint(const uint8_t *src, uint32_t *dst,
     }
 }
 
-static unsigned int encode_num(double src, uint8_t *dst)
+static unsigned int freeze_num(double src, uint8_t *dst)
 {
     double posnum = fabs(src);
     uint32_t trunc = posnum;
@@ -238,11 +238,11 @@ static unsigned int encode_num(double src, uint8_t *dst)
 	    memcpy(dst, &src, sizeof(src));
 	return 9;
     }
-    return encode_uint(trunc, src < 0 ? TYPE_NEGATIVE_INT : TYPE_NUMBER, dst);
+    return freeze_uint(trunc, src < 0 ? TYPE_NEGATIVE_INT : TYPE_NUMBER, dst);
 }
 
-static unsigned int decode_num(const uint8_t *src, double *dst,
-			       size_t available)
+static unsigned int thaw_num(const uint8_t *src, double *dst,
+			     size_t available)
 {
     if (src[0] == NUMTYPE_DOUBLE) {
 	if (available < 9) return 0;
@@ -255,7 +255,7 @@ static unsigned int decode_num(const uint8_t *src, double *dst,
     }
     uint32_t u32dst;
     uint8_t type;
-    unsigned int len = decode_uint(src, &u32dst, &type, available);
+    unsigned int len = thaw_uint(src, &u32dst, &type, available);
     if (len > 0)
 	*dst = type == TYPE_NUMBER ? u32dst : -1.0*u32dst;
     return len;
@@ -272,7 +272,7 @@ static int use_or_make_ref(lua_State *L, int index,
     lua_pushvalue(L, index);
     lua_rawget(L, SEEN_OBJECT_IDX);
     if (!lua_isnil(L, -1)) {
-	len = encode_uint(lua_tointeger(L, -1), TYPE_REF, numbuf);
+	len = freeze_uint(lua_tointeger(L, -1), TYPE_REF, numbuf);
 	buf_addlstring(catbuf, (void *)numbuf, len);
 	lua_pop(L, 1);
 	return 1;
@@ -284,10 +284,10 @@ static int use_or_make_ref(lua_State *L, int index,
     return 0;
 }
 
-static const char *bad_make_restore =
-    "__make_restore must return a lua closure";
+static const char *bad_freeze =
+    "__freeze must return a lua closure";
 
-static void encode_recursive(lua_State *L,
+static void freeze_recursive(lua_State *L,
 			     int index,
 			     unsigned int *seen_object_count,
 			     unsigned int *seen_upvalue_count,
@@ -314,14 +314,14 @@ static void encode_recursive(lua_State *L,
 			1);
 	break;
     case LUA_TNUMBER:
-	len = encode_num(lua_tonumber(L, index), numbuf);
+	len = freeze_num(lua_tonumber(L, index), numbuf);
 	buf_addlstring(catbuf, (void *)numbuf, len);
 	break;
     case LUA_TSTRING:
 	if (!merge_dupl_strs ||
 	    !use_or_make_ref(L, index, seen_object_count, catbuf)) {
 	    len = lua_objlen(L, index);
-	    len = encode_uint(len, TYPE_STRING, numbuf);
+	    len = freeze_uint(len, TYPE_STRING, numbuf);
 	    buf_addlstring(catbuf, (void *)numbuf, len);
 	    const char *str = lua_tolstring(L, index, &len);
 	    buf_addlstring(catbuf, str, len);
@@ -329,21 +329,21 @@ static void encode_recursive(lua_State *L,
 	break;
     case LUA_TTABLE:
 	if (!use_or_make_ref(L, index, seen_object_count, catbuf)) {
-	    if (luaL_getmetafield(L, index, "__make_restore")) {
+	    if (luaL_getmetafield(L, index, "__freeze")) {
 		lua_pushvalue(L, index);
 		lua_call(L, 1, 1);
 		if (!lua_isfunction(L, -1) || lua_iscfunction(L,-1))
-		    luaL_error(L, bad_make_restore);
+		    luaL_error(L, bad_freeze);
 		buf_addlstring(catbuf, STRLIT(CONSTRUCTOR), 1);
-		encode_recursive(L, -1, seen_object_count, seen_upvalue_count,
+		freeze_recursive(L, -1, seen_object_count, seen_upvalue_count,
 				 catbuf, merge_dupl_strs, strip_debug);
 	    } else {
 		unsigned int array_size = lua_objlen(L, index);
-		len = encode_uint(array_size, TYPE_TABLE, numbuf);
+		len = freeze_uint(array_size, TYPE_TABLE, numbuf);
 		buf_addlstring(catbuf, (void *)numbuf, len);
 		for (int i = 1; i <= array_size; i++) {
 		    lua_rawgeti(L, index, i);
-		    encode_recursive(L, -1, seen_object_count,
+		    freeze_recursive(L, -1, seen_object_count,
 				     seen_upvalue_count, catbuf,
 				     merge_dupl_strs, strip_debug);
 		    lua_pop(L, 1);
@@ -355,10 +355,10 @@ static void encode_recursive(lua_State *L,
 		    lua_pushnil(L);
 
 		while (lua_next(L, index)) {
-		    encode_recursive(L, -2, seen_object_count,
+		    freeze_recursive(L, -2, seen_object_count,
 				     seen_upvalue_count, catbuf,
 				     merge_dupl_strs, strip_debug);
-		    encode_recursive(L, -1, seen_object_count,
+		    freeze_recursive(L, -1, seen_object_count,
 				     seen_upvalue_count, catbuf,
 				     merge_dupl_strs, strip_debug);
 		    lua_pop(L, 1);
@@ -369,14 +369,14 @@ static void encode_recursive(lua_State *L,
 	break;
     case LUA_TUSERDATA:
 	if (!use_or_make_ref(L, index, seen_object_count, catbuf)) {
-	    if (!luaL_getmetafield(L, index, "__make_restore"))
+	    if (!luaL_getmetafield(L, index, "__freeze"))
 		luaL_error(L, "Can't serialize this userdata.");
 	    lua_pushvalue(L, index);
 	    lua_call(L, 1, 1);
 	    if (!lua_isfunction(L, -1) || lua_iscfunction(L,-1))
-		luaL_error(L, bad_make_restore);
+		luaL_error(L, bad_freeze);
 	    buf_addlstring(catbuf, STRLIT(CONSTRUCTOR), 1);
-	    encode_recursive(L, -1, seen_object_count, seen_upvalue_count,
+	    freeze_recursive(L, -1, seen_object_count, seen_upvalue_count,
 			     catbuf, merge_dupl_strs, strip_debug);
 	}
 	break;
@@ -391,7 +391,7 @@ static void encode_recursive(lua_State *L,
 	    lua_insert(L, -3);
 	    lua_call(L, 2, 1);
 	    
-	    encode_recursive(L, -1, seen_object_count, seen_upvalue_count,
+	    freeze_recursive(L, -1, seen_object_count, seen_upvalue_count,
 			     catbuf, merge_dupl_strs, strip_debug);
 	    lua_pop(L, 1);
 	    unsigned int upvalue_index = 1;
@@ -401,7 +401,7 @@ static void encode_recursive(lua_State *L,
 		lua_rawget(L, SEEN_UPVALUE_IDX);
 		if (!lua_isnil(L, -1)) {
 		    len =
-			encode_uint(lua_tointeger(L, -1), TYPE_UVREF, numbuf);
+			freeze_uint(lua_tointeger(L, -1), TYPE_UVREF, numbuf);
 		    buf_addlstring(catbuf, (void *)numbuf, len);
 		    lua_pop(L, 2);
 		} else {
@@ -409,9 +409,9 @@ static void encode_recursive(lua_State *L,
 		    lua_pushlightuserdata(L, ident);
 		    lua_pushinteger(L, ++*seen_upvalue_count);
 		    lua_rawset(L, SEEN_UPVALUE_IDX);
-		    len = encode_uint(upvalue_index, TYPE_UINT, numbuf);
+		    len = freeze_uint(upvalue_index, TYPE_UINT, numbuf);
 		    buf_addlstring(catbuf, (void *)numbuf, len);
-		    encode_recursive(L, -1, seen_object_count,
+		    freeze_recursive(L, -1, seen_object_count,
 				     seen_upvalue_count, catbuf,
 				     merge_dupl_strs, strip_debug);
 		    lua_pop(L, 1);
@@ -426,7 +426,7 @@ static void encode_recursive(lua_State *L,
     }
 }
 
-static int encode(lua_State *L)
+int freezer_freeze(lua_State *L)
 {
     switch (lua_gettop(L)) {
     case 0:
@@ -463,7 +463,7 @@ static int encode(lua_State *L)
 	uint8_t numbuf[9];
 	
 	buf_addlstring(&catbuf, STRLIT(ALLOCATE_REFS), 1);
-	int len = encode_uint(seen_object_count, TYPE_UINT, numbuf);
+	int len = freeze_uint(seen_object_count, TYPE_UINT, numbuf);
 	buf_addlstring(&catbuf, (void *)numbuf, len);
 
 	for (unsigned int i = 1; i <= seen_object_count; i++) {
@@ -477,7 +477,7 @@ static int encode(lua_State *L)
 	}
     }
 
-    encode_recursive(L,
+    freeze_recursive(L,
 		     1,
 		     &seen_object_count,
 		     &seen_upvalue_count,
@@ -493,11 +493,12 @@ static char *end_of_data = "Premature end of data in serialization";
 static char *invalid_data = "Invalid data in serialization";
 
 
-uint32_t decode_string_header(lua_State *L, uint8_t **src, size_t *available)
+static uint32_t thaw_string_header(lua_State *L, uint8_t **src,
+				   size_t *available)
 {
     uint32_t string_len;
     uint8_t type;
-    int used = decode_uint(*src, &string_len, &type, *available);
+    int used = thaw_uint(*src, &string_len, &type, *available);
     if (!used) luaL_error(L, end_of_data);
     if (type != TYPE_STRING)
 	luaL_error(L, "Expecting string");
@@ -507,12 +508,10 @@ uint32_t decode_string_header(lua_State *L, uint8_t **src, size_t *available)
     return string_len;
 }
 
-static void decode_recursive(lua_State *L,
-			     uint8_t **src,
-			     size_t *available,
-			     unsigned int *seen_object_count,
-			     unsigned int *seen_upvalue_count,
-			     bool merge_dupl_strs)
+static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
+			   unsigned int *seen_object_count,
+			   unsigned int *seen_upvalue_count,
+			   bool merge_dupl_strs)
 {
     if (*available < 0)
 	luaL_error(L, end_of_data);
@@ -536,11 +535,11 @@ static void decode_recursive(lua_State *L,
 	size_t codelen;
 	const char *code;
 	if (merge_dupl_strs) {
-	    decode_recursive(L, src, available, seen_object_count,
-			     seen_upvalue_count, merge_dupl_strs);
+	    thaw_recursive(L, src, available, seen_object_count,
+			   seen_upvalue_count, merge_dupl_strs);
 	    code = lua_tolstring(L, -1, &codelen);
 	} else {
-	    codelen = decode_string_header(L, src, available);
+	    codelen = thaw_string_header(L, src, available);
 	    code = (const char *)*src;
 	    *src += codelen;
 	    *available -= codelen;
@@ -555,7 +554,7 @@ static void decode_recursive(lua_State *L,
 	while (*available > 0 && **src != TABLE_END) {
 	    uint8_t type;
 	    uint32_t result;
-	    int used = decode_uint(*src, &result, &type, *available);
+	    int used = thaw_uint(*src, &result, &type, *available);
 	    if (!used) luaL_error(L, end_of_data);
 	    *available -= used;
 	    *src += used;
@@ -567,8 +566,8 @@ static void decode_recursive(lua_State *L,
 		lua_pushinteger(L, result);
 		lua_rawseti(L, -2, 2);
 		lua_rawseti(L, SEEN_UPVALUE_IDX, ++*seen_upvalue_count);
-		decode_recursive(L, src, available, seen_object_count,
-				 seen_upvalue_count, merge_dupl_strs);
+		thaw_recursive(L, src, available, seen_object_count,
+			       seen_upvalue_count, merge_dupl_strs);
 		lua_setupvalue(L, -2, result);
 		break;
 	    }
@@ -596,8 +595,8 @@ static void decode_recursive(lua_State *L,
     case CONSTRUCTOR:
 	++*src;
 	--*available;
-	decode_recursive(L, src, available, seen_object_count,
-			 seen_upvalue_count, merge_dupl_strs);
+	thaw_recursive(L, src, available, seen_object_count,
+		       seen_upvalue_count, merge_dupl_strs);
 	lua_call(L, 0, 1);
 	return;
     }
@@ -606,7 +605,7 @@ static void decode_recursive(lua_State *L,
     case TYPE_NUMBER:
     case TYPE_NEGATIVE_INT: { // Number type.
 	double result;
-	int used = decode_num(*src, &result, *available);
+	int used = thaw_num(*src, &result, *available);
 	if (!used) {
 	    luaL_error(L, end_of_data);
 	    // This never runs, but the compiler flags the out-param otherwise.
@@ -618,7 +617,7 @@ static void decode_recursive(lua_State *L,
 	break;
     }
     case TYPE_STRING: {
-	uint32_t len = decode_string_header(L, src, available);
+	uint32_t len = thaw_string_header(L, src, available);
 	lua_pushlstring(L, (const char *)*src, len);
 	*src += len;
 	*available -= len;
@@ -631,7 +630,7 @@ static void decode_recursive(lua_State *L,
     case TYPE_TABLE: {
 	uint32_t result;
 	uint8_t type;
-	int used = decode_uint(*src, &result, &type, *available);
+	int used = thaw_uint(*src, &result, &type, *available);
 	if (!used) luaL_error(L, end_of_data);
 	*src += used;
 	*available -= used;
@@ -639,15 +638,15 @@ static void decode_recursive(lua_State *L,
 	lua_pushvalue(L, -1);
 	lua_rawseti(L, SEEN_OBJECT_IDX, ++*seen_object_count);
 	for (int i = 1; i <= result; i++) {
-	    decode_recursive(L, src, available, seen_object_count,
-			     seen_upvalue_count, merge_dupl_strs);
+	    thaw_recursive(L, src, available, seen_object_count,
+			   seen_upvalue_count, merge_dupl_strs);
 	    lua_rawseti(L, -2, i);
 	}
 	while (*available > 0 && **src != TABLE_END) {
-	    decode_recursive(L, src, available, seen_object_count,
-			     seen_upvalue_count, merge_dupl_strs);
-	    decode_recursive(L, src, available, seen_object_count,
-			     seen_upvalue_count, merge_dupl_strs);
+	    thaw_recursive(L, src, available, seen_object_count,
+			   seen_upvalue_count, merge_dupl_strs);
+	    thaw_recursive(L, src, available, seen_object_count,
+			   seen_upvalue_count, merge_dupl_strs);
 	    lua_rawset(L, -3);
 	}
 	if (**src != TABLE_END || !*available)
@@ -659,7 +658,7 @@ static void decode_recursive(lua_State *L,
     case TYPE_REF: {
 	uint32_t result;
 	uint8_t type;
-	int used = decode_uint(*src, &result, &type, *available);
+	int used = thaw_uint(*src, &result, &type, *available);
 	if (!used) luaL_error(L, end_of_data);
 	*src += used;
 	*available -= used;
@@ -671,7 +670,7 @@ static void decode_recursive(lua_State *L,
     }
 }
 
-static int decode(lua_State *L)
+int freezer_thaw(lua_State *L)
 {
     luaL_checktype(L, 1, LUA_TSTRING);
     size_t len;
@@ -707,7 +706,7 @@ static int decode(lua_State *L)
 	src++;
 	len--;
 	uint8_t type;
-	int result = decode_uint(src, &seen_object_count, &type, len);
+	int result = thaw_uint(src, &seen_object_count, &type, len);
 	if (!result) luaL_error(L, end_of_data);
 	if (type != TYPE_UINT)
 	    luaL_error(L, invalid_data);
@@ -725,8 +724,8 @@ static int decode(lua_State *L)
 
     lua_newtable(L); // seen upvalues table
     
-    decode_recursive(L, &src, &len, &seen_object_count,
-		     &seen_upvalue_count, merge_dupl_strs);
+    thaw_recursive(L, &src, &len, &seen_object_count,
+		   &seen_upvalue_count, merge_dupl_strs);
     
     if (len) luaL_error(L, "Extra bytes");
 
@@ -735,33 +734,37 @@ static int decode(lua_State *L)
 
 static int clone(lua_State *L)
 {
-    encode(L);
+    freezer_freeze(L);
     lua_replace(L, 1);
     lua_settop(L, 2);
-    return decode(L);
+    return freezer_thaw(L);
 }
 
-LUALIB_API int luaopen_newmarshal(lua_State *L)
+LUALIB_API int luaopen_freezer(lua_State *L)
 {
     // Detect endianness.  Bizarre byte sex is not supported.
     union { uint32_t in; uint8_t out[sizeof(uint32_t)]; } pun = { .in = 1 };
     big_endian = pun.out[0] == 0;
 
-    static const luaL_Reg marshal_entry_pts[] = {
-	{"decode", decode},
-	{"clone", clone},
-	{NULL, NULL}
-    };
+    // The usual registration doesn't produce synonyms for
+    // the same C function, so we build the table ourselves.
     lua_newtable(L);
-    luaL_register(L, NULL, marshal_entry_pts);
 
     // LuaJIT doesn't expose the strip parameter, and
     // the overhead of the callout is minor.
     lua_getglobal(L, "string");
     lua_getfield(L, -1, "dump");
-    lua_pushcclosure(L, encode, 1);
+    lua_pushcclosure(L, freezer_freeze, 1);
     lua_remove(L, -2);
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -3, "freeze");
     lua_setfield(L, -2, "encode");
+    lua_pushcfunction(L, freezer_thaw);
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -3, "thaw");
+    lua_setfield(L, -2, "decode");
+    lua_pushcfunction(L, clone);
+    lua_setfield(L, -2, "clone");
 
     return 1;
 }

@@ -1,4 +1,4 @@
-local marshal = package.loadlib('./newmarshal.so', 'luaopen_newmarshal')()
+local marshal = require 'freezer'
 
 local k = { "tkey" }
 local a = { "a", "b", "c", [k] = "tval" }
@@ -45,7 +45,7 @@ assert(u.here[1] == "cycle")
 local o = { x = 11, y = 22 }
 local seen_hook
 setmetatable(o, {
-   __make_restore = function(o)
+   __freeze = function(o)
       local x = o.x
       local y = o.y
       seen_hook = true
@@ -68,7 +68,7 @@ assert(p ~= o)
 assert(p.x == o.x)
 assert(p.y == o.y)
 assert(getmetatable(p))
-assert(type(getmetatable(p).__make_restore) == "function")
+assert(type(getmetatable(p).__freeze) == "function")
 
 local o = { 42 }
 local a = { o, o, o }
@@ -104,7 +104,7 @@ assert(t[1]() == t[4])
 
 local u = newproxy()
 debug.setmetatable(u, {
-   __make_restore = function()
+   __freeze = function()
       return function()
          return newproxy()
       end

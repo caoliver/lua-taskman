@@ -47,7 +47,7 @@ function bench(name, encoder, decoder, show)
 					this_time/last_time))
 end
    
-nm = require 'newmarshal'
+nm = require 'freezer'
 rh= require 'marshal'
 cb = require 'CBOR'
 

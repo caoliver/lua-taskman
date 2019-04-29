@@ -7,11 +7,11 @@ LDFLAGS+=-lpthread -lm
 
 .PHONY: all test clean
 
-test: newmarshal.so
+test: freezer.so
 	lua test.lua
 
 
-all: newmarshal.so
+all: freezer.so
 	lua test.lua
 
 %.so: %.o 
