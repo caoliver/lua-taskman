@@ -663,7 +663,9 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 	*src += used;
 	*available -= used;
 	lua_rawgeti(L, SEEN_OBJECT_IDX, result);
-	break;
+	if (!lua_isnil(L, -1))
+	    break;
+	luaL_error(L, invalid_data);
     }
     default:
 	luaL_error(L, invalid_data);
