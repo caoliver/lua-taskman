@@ -730,11 +730,23 @@ static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
     return 1;
 }
 
-int freeze_thaw_buffer(lua_State *L, uint8_t *buf, size_t len)
+int freezer_thaw_buffer(lua_State *L)
 {
+    size_t len;
+    uint8_t *buf;
+    if (lua_islightuserdata(L, 1)) {
+	len = (size_t)luaL_checkinteger(L, 2);
+	buf = lua_touserdata(L, 1);
+	lua_remove(L, 1);
+    } else
+	buf = (uint8_t *)luaL_checklstring(L, 1, &len);
+
+    if (len < 0)
+	luaL_error(L, "Invalid length in freeze string");
     lua_pushnil(L);
     lua_insert(L, 1);
-    return freezer_thaw_something(L, buf, len);
+    int result = freezer_thaw_something(L, buf, len);
+    return result;
 }
 
 int freezer_thaw(lua_State *L)
