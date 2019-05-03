@@ -672,15 +672,11 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
     }
 }
 
-int freezer_thaw(lua_State *L)
+static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
 {
-    luaL_checktype(L, 1, LUA_TSTRING);
-    size_t len;
-    uint8_t *src = (uint8_t *)lua_tolstring(L, 1, (size_t *)&len);
     bool merge_dupl_strs = false;
     
-    switch (lua_gettop(L)) {
-    case 1:
+    if (lua_gettop(L) == 1) {
 	lua_newtable(L);   // Empty initial seen objects
     }
     uint32_t seen_object_count = 0;
@@ -689,30 +685,30 @@ int freezer_thaw(lua_State *L)
 #ifdef MAGIC_COOKIE
     size_t magiclen;
     if (len < sizeof(magic_header) ||
-	memcmp(magic_header, src, sizeof(magic_header)))
+	memcmp(magic_header, buf, sizeof(magic_header)))
 	luaL_error(L, "Bad magic header");
     
     len -= sizeof(magic_header);
-    src += sizeof(magic_header);
+    buf += sizeof(magic_header);
 #endif
     
-    if (len > 0 && *src == MERGE_DUPL_STRS) {
-	src++;
+    if (len > 0 && *buf == MERGE_DUPL_STRS) {
+	buf++;
 	len--;
 	merge_dupl_strs = true;
     }
 
     // Make seen object table.
     lua_newtable(L);
-    if (len > 0 && *src == ALLOCATE_REFS) {
-	src++;
+    if (len > 0 && *buf == ALLOCATE_REFS) {
+	buf++;
 	len--;
 	uint8_t type;
-	int result = thaw_uint(src, &seen_object_count, &type, len);
+	int result = thaw_uint(buf, &seen_object_count, &type, len);
 	if (!result) luaL_error(L, end_of_data);
 	if (type != TYPE_UINT)
 	    luaL_error(L, invalid_data);
-	src += result;
+	buf += result;
 	len -= result;
 	for (unsigned int i = 1; i <= seen_object_count; i++) {
 	    lua_rawgeti(L, 2, i);
@@ -726,12 +722,28 @@ int freezer_thaw(lua_State *L)
 
     lua_newtable(L); // seen upvalues table
     
-    thaw_recursive(L, &src, &len, &seen_object_count,
+    thaw_recursive(L, &buf, &len, &seen_object_count,
 		   &seen_upvalue_count, merge_dupl_strs);
     
     if (len) luaL_error(L, "Extra bytes");
 
     return 1;
+}
+
+int freeze_thaw_buffer(lua_State *L, uint8_t *buf, size_t len)
+{
+    lua_pushnil(L);
+    lua_insert(L, 1);
+    return freezer_thaw_something(L, buf, len);
+}
+
+int freezer_thaw(lua_State *L)
+{
+    luaL_checktype(L, 1, LUA_TSTRING);
+    size_t len;
+    uint8_t *buf = (uint8_t *)lua_tolstring(L, 1, (size_t *)&len);
+
+    return freezer_thaw_something(L, buf, len);
 }
 
 static int clone(lua_State *L)
