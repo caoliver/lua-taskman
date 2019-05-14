@@ -42,13 +42,17 @@
 #include <limits.h>
 
 // Do you want to start the serialization with a magic cookie?
-// #define MAGIC_COOKIE { 'L', 'M', 'S', 'H' }
+// #define MAGIC_COOKIE { 'L', 'F', 'R', 'Z' }
 
 #ifdef MAGIC_COOKIE
 unsigned char magic_header[] = MAGIC_COOKIE;
 #endif
 
 static int big_endian=0;
+
+#define SEEN_OBJECT_IDX 3
+#define SEEN_UPVALUE_IDX 4
+#define STRING_ACCUMULATOR_IDX 5
 
 struct buffer {
     lua_State *L;
@@ -64,10 +68,6 @@ static void buf_buffinit(lua_State *L, struct buffer *buf)
     buf->depth = 0;
 }
 
-#define SEEN_OBJECT_IDX 3
-#define SEEN_UPVALUE_IDX 4
-#define STRING_ACCUMULATOR 5
-
 static void buf_addlstring(struct buffer *buf, const char *str, size_t len)
 {
     while (len > 0) {
@@ -75,7 +75,7 @@ static void buf_addlstring(struct buffer *buf, const char *str, size_t len)
 	if (len > remaining) {
 	    memcpy(buf->ptr, str, remaining);
 	    lua_pushlstring(buf->L, buf->buf, sizeof(buf->buf));
-	    lua_rawseti(buf->L, STRING_ACCUMULATOR, ++buf->depth);
+	    lua_rawseti(buf->L, STRING_ACCUMULATOR_IDX, ++buf->depth);
 	    str += remaining;
 	    len -= remaining;
 	    buf->ptr = buf->buf;
@@ -95,9 +95,9 @@ static void buf_pushresult(struct buffer *buf)
     int depth = buf->depth;
     if (depth==0)
 	return;
-    lua_rawseti(L, STRING_ACCUMULATOR, ++depth);
+    lua_rawseti(L, STRING_ACCUMULATOR_IDX, ++depth);
 
-    int tsrc = STRING_ACCUMULATOR;
+    int tsrc = STRING_ACCUMULATOR_IDX;
 
     if (depth > CONCAT_SIZE) {
 	lua_newtable(L);
@@ -133,13 +133,14 @@ static void buf_pushresult(struct buffer *buf)
     lua_concat(L, depth);
 }
 
+// Lower order tag for multibyte numbers
 #define NUMTYPE_DOUBLE 31
 #define NUMTYPE_UINT32 30
 #define NUMTYPE_UINT24 29
 #define NUMTYPE_UINT16 28
 #define NUMTYPE_UINT8 27
 
-// Explicit constants and special headers
+// Explicit constants and special headers (Unused 72 to 95)
 #define ALLOCATE_REFS 64
 #define MERGE_DUPL_STRS 65
 #define TABLE_END 66
@@ -545,7 +546,7 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 	    *available -= codelen;
 	}
 	if (luaL_loadbuffer(L, code, codelen, "Serialized code"))
-	    luaL_error(L, "Bad serialized code");
+	    luaL_error(L, invalid_data);
 	if (merge_dupl_strs)
 	    lua_remove(L, -2);
 	lua_pushvalue(L, -1);
@@ -686,7 +687,7 @@ static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
     size_t magiclen;
     if (len < sizeof(magic_header) ||
 	memcmp(magic_header, buf, sizeof(magic_header)))
-	luaL_error(L, "Bad magic header");
+	luaL_error(L, invalid_data);
     
     len -= sizeof(magic_header);
     buf += sizeof(magic_header);
