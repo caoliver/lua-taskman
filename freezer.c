@@ -679,7 +679,11 @@ static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
     
     if (lua_gettop(L) == 1) {
 	lua_newtable(L);   // Empty initial seen objects
+    } else {
+	luaL_checktype(L, 2, LUA_TTABLE);
+	lua_settop(L, 2);
     }
+
     uint32_t seen_object_count = 0;
     uint32_t seen_upvalue_count = 0;
 
@@ -744,8 +748,7 @@ int freezer_thaw_buffer(lua_State *L)
 
     if (len < 0)
 	luaL_error(L, "Invalid length in freeze string");
-    lua_pushnil(L);
-    lua_insert(L, 1);
+
     int result = freezer_thaw_something(L, buf, len);
     return result;
 }
