@@ -34,12 +34,20 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <stdbool.h>
-#include <byteswap.h>
 #include <lua.h>
 #include <lualib.h>
 #include <lauxlib.h>
 #include <assert.h>
 #include <limits.h>
+
+#if defined(__APPLE__)
+#define bswap_32(x) OSSwapInt32(x)
+#define bswap_64(x) OSSwapInt64(x)
+#elif defined(__linux__)
+#include <byteswap.h>
+#else
+#error You figure out what to do here for swapping
+#endif
 
 // Do you want to start the serialization with a magic cookie?
 // #define MAGIC_COOKIE { 'L', 'F', 'R', 'Z' }
@@ -749,8 +757,7 @@ int freezer_thaw_buffer(lua_State *L)
     if (len < 0)
 	luaL_error(L, "Invalid length in freeze string");
 
-    int result = freezer_thaw_something(L, buf, len);
-    return result;
+    return freezer_thaw_something(L, buf, len);
 }
 
 int freezer_thaw(lua_State *L)
