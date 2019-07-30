@@ -48,6 +48,13 @@ Freezer provides Lua C API style calls as:
 
 There is no C API for clone.
 
+N.B. freeze_freezer expects to get the string.dump function via an upvalue.
+If you will serialize functions, you will need something like the following:
+
+    lua_getglobal(L, "string");
+    lua_getfield(L, -1, "dump");
+    lua_pushcclosure(L, my_freeze_func, 1);
+
 Hooks
 -----
 
