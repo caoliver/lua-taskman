@@ -1,0 +1,961 @@
+#define _XOPEN_SOURCE 500
+#include <pthread.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <err.h>
+#include <stdbool.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <semaphore.h>
+#include <string.h>
+#include <time.h>
+
+#include "lua_head.h"
+
+void show_stack(lua_State *L)
+{
+    printf("TOP IS %d\n", lua_gettop(L));
+    for (int i = lua_gettop(L); i > 0; i--)
+	printf("\t%d:\t%s\n", i, lua_typename(L, lua_type(L, i)));
+}
+
+#include "mmaputil.h"
+
+#define MIN_TASKS 8
+// This is a uint16_t.  Maybe make this smaller.
+#define MAX_TASKS 65536
+#define MIN_CONTROL_BUFFER_SIZE (1<<18)
+//#define MIN_CLIENT_BUFFER_SIZE (1<<18)
+#define MIN_CLIENT_BUFFER_SIZE (1<<18)
+
+#define HOUSEKEEPER_WAKE_USEC 1000000
+
+#define INLINE_CBUF_CODE
+#include "cbuf.h"
+
+// Control message types
+#define GET_TASK_INDEX 0
+#define CREATE_TASK 1
+#define THREAD_EXITS 2
+#define REQUEST_SHUTDOWN 3
+#define SHOW_STATUS 4
+
+// Client message types
+#define NORMAL_CLIENT_MSG 0
+
+#define SUBSCRIPT_SHIFT 8
+#define QUIT_FLAG 1
+
+#define ANNOUCEMENT_SHIFT 16
+char *announcements = {
+#define ANNOUNCE_CHLD 1<<ANNOUCEMENT_SHIFT
+    "child_dies",
+#define ANNOUNCE_NNTASK 2<<ANNOUCEMENT_SHIFT
+    "new_named_task",
+    NULL};
+
+
+// Align message lengths on double words.
+#define ALIGN(N) ((N)+7 & ~7)
+
+__thread lua_State *L;
+
+__thread uint16_t my_index;
+
+static char *tasklist_name = "__task_list";
+static char *housekeeper_name = "HouseKeeper";
+static char *maintask_name = ":main:";
+
+static void sigexit(lua_State *L, lua_Debug *ar)
+{
+  (void)ar;  /* unused arg. */
+  lua_sethook(L, NULL, 0, 0);
+  lua_pushstring(L, "Soft interrupt");
+  lua_error(L);
+}
+
+void sigusr1_handler(int sig)
+{
+    lua_sethook(L, sigexit, LUA_MASKCALL | LUA_MASKRET | LUA_MASKCOUNT, 1);
+}
+
+// This crashes VM completely under some circumstances.
+void sigusr2_handler(int sig)
+{
+    lua_pushstring(L, "Hard interrupt");
+    lua_error(L);
+}
+
+sem_t task_running_sem;
+
+struct task {
+    uint16_t nonce, last_active_nonce;
+    uint16_t parent_index;
+    uint16_t parent_nonce;
+    uint32_t control_flags;
+    struct circbuf incoming_queue;
+    uint8_t *incoming_store;
+    pthread_t thread;
+    sem_t housekeeper_pending;
+    sem_t incoming_sem;
+    pthread_mutex_t incoming_mutex;
+    int query_index;
+    int query_extra;
+    char *name;
+};
+
+static uint16_t num_tasks;
+struct task *tasks, *free_tasks;
+
+pthread_t housekeeper_thread;
+
+static char *bad_msg = "%s: Bad message";
+
+static size_t control_channel_size;
+static uint8_t *control_channel_store;
+static struct circbuf control_channel_buf;
+static sem_t control_channel_sem;
+pthread_mutex_t control_channel_mutex;
+
+struct message {
+    uint16_t type;
+    uint16_t sender;
+    uint16_t nonce;
+    uint32_t size;
+    uint8_t payload[0];
+};
+
+LUAFN(traceback)
+{
+    if (!lua_isstring(L, 1))  /* 'message' not a string? */
+	return 1;  /* keep it intact */
+    lua_getfield(L, LUA_GLOBALSINDEX, "debug");
+    if (!lua_istable(L, -1)) {
+	lua_pop(L, 1);
+	return 1;
+    }
+    lua_getfield(L, -1, "traceback");
+    if (!lua_isfunction(L, -1)) {
+	lua_pop(L, 2);
+	return 1;
+    }
+    lua_pushvalue(L, 1);  /* pass error message */
+    lua_pushinteger(L, 2);  /* skip this function and traceback */
+    lua_call(L, 2, 1);  /* call debug.traceback */
+    return 1;
+}
+
+extern int freezer_thaw_buffer(lua_State *);
+extern int freezer_freeze(lua_State *L);
+
+int send_ctl_msg(uint16_t command, const char *payload, uint32_t size)
+{
+    uint32_t msgsize = ALIGN(sizeof(struct message) + size);
+    bool success = false;
+    pthread_mutex_lock(&control_channel_mutex);
+    if (cb_available(&control_channel_buf) >= msgsize) {
+	struct message *msg =
+	    (void *)(cb_tail(&control_channel_buf) + control_channel_store);
+	msg->sender = my_index;
+	msg->nonce = tasks[my_index].nonce;
+	msg->type = command;
+	msg->size = size;
+	memcpy(msg->payload, payload, size);
+	cb_produce(&control_channel_buf, msgsize);
+	success = true;
+    }
+    pthread_mutex_unlock(&control_channel_mutex);
+    if (!success) return -1;
+    sem_post(&control_channel_sem);
+    return 0;
+}
+
+int send_client_msg(struct task *task,
+		    uint16_t type, const char *payload, uint32_t size)
+{
+    uint32_t msgsize = ALIGN(sizeof(struct message) + size);
+    bool success = false;
+    uint8_t *store =  task->incoming_store;
+    pthread_mutex_lock(&task->incoming_mutex);
+    if (store == task->incoming_store &&
+	cb_available(&task->incoming_queue) >= msgsize) {
+	struct message *msg =
+	    (void *)(cb_tail(&task->incoming_queue) + task->incoming_store);
+	msg->sender = my_index;
+	msg->nonce = tasks[my_index].nonce;
+	msg->type = type;
+	msg->size = size;
+	memcpy(msg->payload, payload, size);
+	cb_produce(&task->incoming_queue, msgsize);
+	success = true;
+    }
+    pthread_mutex_unlock(&task->incoming_mutex);
+    if (!success) return -1;
+    sem_post(&task->incoming_sem);
+    return 0;
+}
+
+static int wait_for_reply(lua_State *L)
+{
+    struct task *mytask = &tasks[my_index];
+
+    sem_wait(&mytask->housekeeper_pending);
+    lua_pushinteger(L, mytask->query_index);
+    lua_pushinteger(L, mytask->query_extra);
+    return 2;
+}
+
+static void *new_thread(void *luastate)
+{
+    L = luastate;
+    // Stack:
+    //   3 - my index
+    //   2 - program description table
+    //   1 - Traceback function
+    my_index = lua_tointeger(L, -1);
+    
+    struct task *task = &tasks[my_index];
+    if (++task->last_active_nonce == 0)
+	// Nonce zero means unused, so skip over it.
+	task->last_active_nonce = 1;
+    task->nonce = task->last_active_nonce;
+
+    sem_post(&task_running_sem);
+
+    int arg_count = lua_tointeger(L, -2);
+    lua_pop(L, 2);
+    if (lua_pcall(L, arg_count, LUA_MULTRET, 1)) {
+	// Error message on top.
+	puts(lua_tostring(L, -1));
+    } else {
+	int retvals = lua_gettop(L) - 1;
+	lua_newtable(L);
+	lua_insert(L, 2);
+	for (int i = retvals; i > 0; i--)
+	    lua_rawseti(L, 2, i);
+	lua_settop(L, 2);
+	lua_getglobal(L, "string");
+	lua_getfield(L, -1, "dump");
+	lua_pushcclosure(L, freezer_freeze, 1);
+	lua_insert(L, 2);
+	lua_pop(L, 1);
+	if (lua_pcall(L, 1, 1, 1)) {
+	    // Error message on top.
+	    puts(lua_tostring(L, -1));
+	} else {
+	    // Frozen return values on top.
+	}
+    }
+
+    if (send_ctl_msg(THREAD_EXITS, "", 0))
+	errx(1, "Can't send task exit message.");
+    lua_close(L);
+    return NULL;
+}
+
+static int create_task(uint8_t *taskdescr, int size,
+		       uint16_t sender, uint16_t sender_nonce)
+{
+    lua_State *newstate;
+    struct task *task = NULL;
+    static unsigned int last_task_allocated;
+    // Create tast is invoked from housekeeper only, so L refers to
+    // housekeeper's dictionary store rather than client's lua_States.
+
+    int freetask = -1;
+    // Look for a free slot O(n).
+    int next_task_allocated = last_task_allocated;
+    for (int i = 1; i < num_tasks; i++) {
+	if (++next_task_allocated == num_tasks)
+	    next_task_allocated = 1;
+	if (tasks[next_task_allocated].nonce == 0) {
+	    freetask = next_task_allocated;
+	    break;
+	}
+    }
+    newstate = luaL_newstate();
+    if (freetask < 0) {
+	lua_pushstring(newstate, "No tasks available.");
+	goto bugout;
+    }
+    luaL_openlibs(newstate);
+    // Add task ID cache
+    lua_newtable(newstate);
+    lua_setglobal(newstate, tasklist_name);
+    // Add error handler
+    lua_pushcfunction(newstate, LUAFN_NAME(traceback));
+    // Unpack task description
+    lua_pushcfunction(newstate, freezer_thaw_buffer);
+    lua_pushlightuserdata(newstate, (void *)taskdescr);
+    lua_pushinteger(newstate, size);
+    // This shouldn't happen unless freezer is broken.
+    if (lua_pcall(newstate, 2,1,-4)) {
+	lua_pushfstring(newstate, "Freezer decode failed: %s",
+			lua_tostring(newstate, -1));
+	lua_remove(newstate, -2);
+	goto bugout;
+    }
+    task = &tasks[freetask];
+    task->control_flags = 0;
+    
+    //  Create incoming message queue.
+    lua_pushstring(newstate, "queuesize");
+    lua_rawget(newstate, -2);
+    int queuesize = lua_tointeger(newstate, -1);
+    if (!lua_isnil(newstate, -1) && !lua_isnumber(newstate, -1)) {
+	lua_pushstring(newstate, "Bad queue size");
+	goto bugout;
+    }
+    lua_pop(newstate, 1);
+    if (queuesize < MIN_CLIENT_BUFFER_SIZE)
+	queuesize = MIN_CLIENT_BUFFER_SIZE;
+    size_t qsiz = queuesize;
+    task->incoming_store = allocate_twinmap(&qsiz);
+    cb_init(&task->incoming_queue, qsiz);
+    sem_init(&task->incoming_sem, 0, 0);
+    pthread_mutex_init(&task->incoming_mutex, NULL);
+    
+    // Set task name if given one.
+    lua_pushstring(newstate, "taskname");
+    lua_rawget(newstate, -2);
+    if (lua_isnil(newstate, -1)) {
+	task->name = NULL;
+    } else {
+	if (lua_type(newstate, -1) != LUA_TSTRING) {
+	    lua_pushstring(newstate, "Invalid task name");
+	    goto bugout;
+	}
+	const char *namestr = lua_tostring(newstate,-1);
+	lua_pushstring(L, namestr);
+	lua_rawget(L, 1);
+	bool unused = lua_isnil(L, -1);
+	lua_settop(L, 2);
+	if (!unused) {
+	    lua_pushstring(newstate, "Task name in use");
+	    goto bugout;
+	}
+	task->name = strdup(namestr);
+    }
+    lua_pop(newstate, 1);
+    task->parent_index = sender;
+    // Is this valid.
+    task->parent_index = sender_nonce;
+    // Requestor waits on this for replies from housekeeper.
+    sem_init(&task->housekeeper_pending, 0, 0);
+    // Get the function, file, or string chunk.
+    lua_pushstring(newstate, "program");
+    lua_rawget(newstate, -2);
+    int rc = 0;
+    if (lua_type(newstate, -1) == LUA_TSTRING &&
+	lua_objlen(newstate, -1) > 1) {
+	const char *progtext=lua_tostring(newstate, -1);
+	if (progtext[0] == ':')
+	    rc = luaL_loadfile(newstate, &progtext[1]);
+	else
+	    rc = luaL_loadstring(newstate, progtext);
+	lua_remove(newstate, -2);
+    }
+    // If we don't have a function now, then caller made a booboo.
+    if (!lua_isfunction(newstate, -1)) {
+	if (rc == 0)
+	    lua_pushfstring(newstate, "Invalid program type: %s",
+			    lua_typename(newstate,
+					 lua_type(newstate, -1)));
+	goto bugout;
+    }
+
+    // Setup arguments from program description.
+    int arg_count = 0;
+    while (1) {
+	lua_rawgeti(newstate, 2, ++arg_count);
+	if (lua_isnil(newstate, -1)) {
+	    lua_pop(newstate, 1);
+	    arg_count--;
+	    break;
+	}
+    }
+    // We're done with the program description now.
+    lua_remove(newstate, 2);
+    lua_pushinteger(newstate, arg_count);
+    lua_pushinteger(newstate, freetask);
+    if (pthread_create(&task->thread, NULL, new_thread,
+		       (void *)newstate) < 0) {
+	lua_pushstring(newstate, "Can't create thread");
+	goto bugout;
+    }
+    last_task_allocated = next_task_allocated;
+    // Save task in dictionary.
+    if (task->name) {
+	lua_pushstring(L, task->name);
+	lua_pushinteger(L, freetask);
+	lua_rawset(L, 1);
+    }
+    
+    return freetask;
+bugout:
+
+    puts(lua_tostring(newstate, -1));
+    if (task && task->incoming_store)
+	free_twinmap(task->incoming_store, task->incoming_queue.size);
+    lua_close(newstate);
+    return -1;
+}
+
+static bool initialized;
+
+static void kill_stragglers()
+{
+    int found_some = 0;
+    for (int i = 1; i < num_tasks; i++)
+	if (tasks[i].nonce != 0) {
+	    found_some++;
+	    pthread_kill(tasks[i].thread, SIGUSR2);
+	}
+    if (found_some)
+	fprintf(stderr, "Stragglers: %d\n", found_some);
+}
+
+static void *housekeeper(void *dummy)
+{
+    struct message *msg;
+    int task_count = 0;
+    int finished = 0;
+    int straggler_delay = 2;
+    
+    if ((L = luaL_newstate()) == NULL)
+	err(1, housekeeper_name);
+
+    lua_newtable(L); // Task dictionary;
+
+    // Save the task for the main process.
+    lua_pushstring(L, maintask_name);
+    lua_pushinteger(L, 0);
+    lua_rawset(L, 1);
+
+    bool shutdown = false;
+
+    sem_init(&task_running_sem, 0, 0);
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    while (1) {
+	if (sem_timedwait(&control_channel_sem, &ts) < 0) {
+	    if (shutdown && --straggler_delay == 0)
+		kill_stragglers();
+
+	    if ((ts.tv_nsec += 1000L*HOUSEKEEPER_WAKE_USEC) > 1000000000) {
+		ts.tv_sec += ts.tv_nsec / 1000000000;
+		ts.tv_nsec = ts.tv_nsec % 1000000000;
+	    }
+	    continue;
+	}
+	msg = (void *)(cb_head(&control_channel_buf) + control_channel_store);
+	size_t msgmax = cb_occupied(&control_channel_buf);
+	if (msgmax < sizeof(struct message))
+	    errx(1, bad_msg, housekeeper_name);
+	int sender = msg->sender;
+	size_t size = msg->size;
+	switch(msg->type) {
+	case GET_TASK_INDEX:
+	    lua_pushlstring(L, (void *)msg->payload, size);
+	    cb_release(&control_channel_buf,
+		       ALIGN(sizeof(struct message)+size));
+	    if (shutdown)
+		tasks[sender].query_index = -1;
+	    else {
+		lua_rawget(L, 1);
+		tasks[sender].query_index =
+		    lua_isnil(L,-1) ? -1 : lua_tointeger(L, -1);
+	    }
+	    sem_post(&tasks[sender].housekeeper_pending);
+	    break;
+	case CREATE_TASK: {
+	    if (shutdown)
+		tasks[sender].query_index = -1;
+	    else {
+		int child_ix = create_task(msg->payload, msg->size,
+					   sender, msg->nonce);
+		tasks[sender].query_index = child_ix;
+		if (child_ix > 0) {
+		    sem_wait(&task_running_sem);
+		    tasks[sender].query_extra = tasks[child_ix].nonce;
+		    task_count++;
+		}
+	    }
+	    cb_release(&control_channel_buf,
+		       ALIGN(sizeof(struct message)+size));
+	    sem_post(&tasks[sender].housekeeper_pending);
+	    break;
+	}
+	case SHOW_STATUS: {
+	    unsigned int anon = 0;
+	    cb_release(&control_channel_buf,
+		       ALIGN(sizeof(struct message)+size));
+	    printf("Running: %d / Finished: %d\n\n", task_count+1, finished);
+	    for (int i = 0; i < num_tasks; i++) {
+	    	if (tasks[i].nonce != 0) {
+		    if (tasks[i].name)
+			printf("    %s\n", tasks[i].name);
+		    else
+			anon++;
+	    	}
+	    }
+	    if (anon > 0)
+		printf("+ %d anonymous\n", anon);
+	    fflush(stdout);
+	}
+	    break;
+	case THREAD_EXITS:
+
+	    cb_release(&control_channel_buf,
+		       ALIGN(sizeof(struct message)+size));
+	    tasks[sender].nonce=0;
+	    tasks[sender].control_flags=0;
+	    pthread_join(tasks[sender].thread, NULL);
+	    finished++;
+	    if (--task_count <= 0 && shutdown)
+		goto fini;
+	    if (tasks[sender].name) {
+		lua_pushstring(L, tasks[sender].name);
+		lua_pushnil(L);
+		lua_rawset(L, 1);
+		free(tasks[sender].name);
+	    }
+	    if (tasks[sender].incoming_store) {
+		// Lock to prevent use after free
+		pthread_mutex_lock(&tasks[sender].incoming_mutex);
+		free_twinmap(tasks[sender].incoming_store,
+			     tasks[sender].incoming_queue.size);
+		tasks[sender].incoming_store = 0;
+		pthread_mutex_unlock(&tasks[sender].incoming_mutex);
+	    }
+	    break;
+	case REQUEST_SHUTDOWN:
+	    cb_release(&control_channel_buf,
+		       ALIGN(sizeof(struct message)+size));
+	    if (sender != 0) {
+		sem_post(&tasks[sender].housekeeper_pending);
+		break;
+	    }
+	    shutdown = true;
+	    if (task_count == 0)
+		goto fini;
+	    for (int i = 1; i < num_tasks; i++)
+	    	if (tasks[i].nonce != 0)
+	    	    pthread_kill(tasks[i].thread, SIGUSR1);
+	    break;
+	default:
+	    errx(1, bad_msg, housekeeper_name);
+	}
+	lua_settop(L, 2);
+    }
+
+fini:
+    puts("DONE");
+    sem_post(&tasks[0].housekeeper_pending);
+    lua_close(L);
+    signal(SIGUSR1, SIG_DFL);
+    signal(SIGUSR2, SIG_DFL);
+    return NULL;
+}
+
+#define ASSURE_INITIALIZED if (!initialized) initialize(L, 0, 0, 0)
+
+static int initialize(lua_State *L,
+		      unsigned int task_limit,
+		      size_t control_channel_size,
+		      size_t main_incoming_channel_size)
+{
+    if (initialized)
+	luaL_error(L, "TASKMGR is already initialized");
+    initialized = true;
+
+    lua_newtable(L);
+    lua_setglobal(L, tasklist_name);
+
+    pthread_mutex_init(&control_channel_mutex, NULL);
+    struct sigaction action;
+
+    sem_init(&control_channel_sem,0,0);
+    action.sa_handler = sigusr1_handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    sigaction(SIGUSR1, &action, NULL);
+    action.sa_handler = sigusr2_handler;
+    sigaction(SIGUSR2, &action, NULL);
+    
+    if (task_limit > MAX_TASKS) task_limit = MAX_TASKS;
+    num_tasks = task_limit < MIN_TASKS ? MIN_TASKS : task_limit;
+    tasks = calloc(num_tasks, sizeof(struct task));
+
+    if (control_channel_size < MIN_CONTROL_BUFFER_SIZE)
+	control_channel_size = MIN_CONTROL_BUFFER_SIZE;
+    control_channel_store = allocate_twinmap(&control_channel_size);
+    cb_init(&control_channel_buf, control_channel_size);
+    if (main_incoming_channel_size < MIN_CLIENT_BUFFER_SIZE)
+	main_incoming_channel_size = MIN_CLIENT_BUFFER_SIZE;
+    tasks->incoming_store = allocate_twinmap(&main_incoming_channel_size);
+    cb_init(&tasks->incoming_queue, main_incoming_channel_size);
+
+    // Main thread is task 0;
+    tasks->thread = pthread_self();
+    tasks->name = maintask_name;
+    tasks->nonce = 1;
+    sem_init(&tasks->housekeeper_pending, 0, 0);
+    
+    return pthread_create(&housekeeper_thread, NULL, &housekeeper, NULL);
+}
+
+LUAFN(initialize)
+{
+    unsigned int task_limit = 0;
+    size_t control_channel_size = 0;
+    size_t main_incoming_channel_size = 0;
+
+    if (lua_istable(L, 1)) {
+	lua_settop(L, 1);
+	lua_getfield(L, 1, "task_limit");
+	task_limit = lua_tonumber(L, -1);
+	lua_getfield(L, 1, "control_channel_bytes");
+	control_channel_size = lua_tonumber(L, -1);
+	lua_getfield(L, 1, "main_channel_bytes");
+	main_incoming_channel_size = lua_tonumber(L, -1);
+	lua_settop(L, 0);
+    }
+    
+    lua_pushboolean(L, initialize(L,
+				  task_limit,
+				  control_channel_size,
+				  main_incoming_channel_size));
+    return 0;
+}
+
+LUAFN(create_task)
+{
+    ASSURE_INITIALIZED;
+    lua_settop(L, 1);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    freezer_freeze(L);
+    size_t size = lua_objlen(L, -1);
+    if (send_ctl_msg(CREATE_TASK, lua_tostring(L, -1), size))
+	return 0;
+    return wait_for_reply(L);
+}
+
+struct task_cache_entry {
+    uint16_t task_ix;
+    uint16_t nonce;
+};
+
+int lookup_task(lua_State *L, const char *name)
+{
+    int top = lua_gettop(L);
+    lua_getglobal(L, tasklist_name);
+    lua_getfield(L, -1, name);
+    // Name / table / lookup
+    if (!lua_isnil(L, -1)) {
+	struct task_cache_entry *task_entry = (void *)lua_tostring(L, -1);
+	if (tasks[task_entry->task_ix].nonce == task_entry->nonce)
+	    return task_entry->task_ix;
+    }
+    lua_pop(L, 1);
+    if (send_ctl_msg(GET_TASK_INDEX, name, strlen(name))) {
+	lua_settop(L, top);
+	return -2;
+    }
+    int result = wait_for_reply(L);
+    if (result > 0) {
+	if ((result = lua_tointeger(L, -2)) >= 0) {
+	    struct task_cache_entry task_entry;
+	    task_entry.task_ix = result;
+	    task_entry.nonce = lua_tointeger(L, -1);
+	    lua_pushlstring(L, (void *)&task_entry, sizeof(task_entry));
+	} else
+	    lua_pushnil(L);
+	lua_setfield(L, -4, name);
+    }
+    lua_settop(L, top);
+    return result;
+}
+
+int validate_task(lua_State *L, int ix)
+{
+    int task_ix;
+    if (lua_isnumber(L, ix)) {
+	task_ix = luaL_checkinteger(L, ix);
+	if (task_ix < 0 || task_ix >= num_tasks
+	    || luaL_checkinteger(L, ix+1) != tasks[task_ix].nonce)
+	    return -1;
+    } else
+	task_ix = lookup_task(L, luaL_checkstring(L, ix));
+    return task_ix; 
+}
+
+LUAFN(lookup_task)
+{
+    ASSURE_INITIALIZED;
+    int task_ix = validate_task(L, 1);
+    if (task_ix < 0)
+	return 0;
+    lua_pushinteger(L, task_ix);
+    return 1;
+}
+
+LUAFN(shutdown)
+{
+    if (initialized && my_index == 0) {
+	send_ctl_msg(REQUEST_SHUTDOWN, "", 0);
+	sem_wait(&tasks[my_index].housekeeper_pending);
+	pthread_join(housekeeper_thread, NULL);
+	free(tasks);
+	free_twinmap(control_channel_store, control_channel_size);
+	initialized = false;
+    }
+    return 0;
+}
+
+LUAFN(status)
+{
+    if (!initialized)
+	puts("Inactive");
+    else if (my_index == 0)
+	send_ctl_msg(SHOW_STATUS, "", 0);
+    return 0;
+}
+
+LUAFN(request_quit)
+{
+    ASSURE_INITIALIZED;
+    int task_ix = validate_task(L, 1);
+    if (task_ix < 1)
+	return 0;
+    tasks[task_ix].control_flags |= QUIT_FLAG;
+    lua_pushinteger(L, task_ix);
+    return 1;
+}
+
+LUAFN(interrupt_task)
+{
+    ASSURE_INITIALIZED;
+    int signo = 0;
+    if (!lua_isnil(L, 1))
+	signo = lua_toboolean(L, 1) ? 12 : 10;
+	
+    int task_ix = validate_task(L, 2);
+    if (task_ix < 1)
+	return 0;
+    tasks[task_ix].control_flags |= QUIT_FLAG;
+    pthread_kill(tasks[task_ix].thread, signo);
+    lua_pushinteger(L, task_ix);
+    return 1;
+}
+
+LUAFN(quit_requested)
+{
+    ASSURE_INITIALIZED;
+    lua_pushboolean(L, tasks[my_index].control_flags & QUIT_FLAG);
+    return 1;
+}
+
+static int getmsg(lua_State *L)
+{
+    struct task *task = &tasks[my_index];
+    struct message *msg;
+	
+    if (cb_occupied(&task->incoming_queue) == 0)
+	return 0;
+    msg = (void *)(cb_head(&task->incoming_queue) + task->incoming_store);
+    uint32_t msgmax = cb_occupied(&task->incoming_queue);
+    if (msgmax < sizeof(struct message)) {
+	errx(1, bad_msg, "client");
+    }
+    int sender = msg->sender;
+    struct task *sender_task = &tasks[sender];
+    size_t size = msg->size;
+    lua_pushlstring(L, (char *)msg->payload, size);
+    lua_pushinteger(L, msg->type);
+    cb_release(&task->incoming_queue, ALIGN(sizeof(struct message)+size));
+    if (sender_task->name) {
+	lua_pushstring(L, sender_task->name);
+	return 3;
+    }
+    lua_pushinteger(L, sender);
+    lua_pushinteger(L, sender_task->nonce);
+    return 4;
+}
+
+LUAFN(getmsg)
+{
+    ASSURE_INITIALIZED;
+    int rc = getmsg(L);
+    if (rc > 0)
+	sem_wait(&tasks[my_index].incoming_sem);
+    return rc;
+}
+
+LUAFN(waitmsg)
+{
+    ASSURE_INITIALIZED;
+    if (lua_isnone(L, 1))
+	sem_wait(&tasks[my_index].incoming_sem);
+    else {
+	double delay = luaL_checknumber(L, 1);
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	if (delay < 0)
+	    delay = 0;
+	delay += ts.tv_sec + (double)1E-9*ts.tv_nsec;
+	ts.tv_sec = delay;
+	ts.tv_nsec = 1E9*(delay - ts.tv_sec);
+	if (sem_timedwait(&tasks[my_index].incoming_sem, &ts) < 0)
+	    return 0;
+    }
+    int rc = getmsg(L);
+    return rc;
+}
+
+LUAFN(sendmsg)
+{
+    ASSURE_INITIALIZED;
+    int task_ix = validate_task(L, 2);
+    if (task_ix >= 0) {
+	size_t msglen;
+	const char *msg =lua_tolstring(L, 1, &msglen);
+	if (send_client_msg(&tasks[task_ix], NORMAL_CLIENT_MSG,
+			    msg, msglen) < 0)
+	    // No room, so set error code.
+	    task_ix=-2;
+    }
+    lua_pushinteger(L, task_ix);
+    return 1;
+}
+
+LUAFN(sendtypemsg)
+{
+    ASSURE_INITIALIZED;
+    int task_ix = validate_task(L, 3);
+    if (task_ix >= 0) {
+	size_t msglen;
+	const char *msg =lua_tolstring(L, 1, &msglen);
+	int type = lua_tointeger(L, -2);
+	if (type > 255 || type < 0)
+	    luaL_error(L, "Bad user message type");
+	if (send_client_msg(&tasks[task_ix], type, msg, msglen) < 0)
+	    // No room, so set error code.
+	    task_ix=-2;
+    }
+    lua_pushinteger(L, task_ix);
+    return 1;
+}
+
+LUAFN(broadcast)
+{
+    ASSURE_INITIALIZED;
+    size_t msglen;
+    unsigned int send_count = 0;
+    const char *msg =lua_tolstring(L, 1, &msglen);
+    int type = lua_tointeger(L, 2);
+    if (type > 255 || type < 1)
+	luaL_error(L, "Bad broadcast message type");
+    for (int i = 0; i < num_tasks; i++) {
+	if (i != my_index &&
+	    tasks[i].nonce != 0 &&
+	    tasks[i].control_flags & type<<8)
+	    if (send_client_msg(&tasks[i], type | 0x100, msg, msglen) >=0)
+		send_count++;
+    }
+    lua_pushinteger(L, send_count);
+    return 1;
+}
+
+LUAFN(set_reception)
+{
+    ASSURE_INITIALIZED;
+    int mask = lua_tointeger(L, 1);
+    if (mask < 0 || mask > 255)
+	luaL_error(L, "Bad broadcast mask");
+    tasks[my_index].control_flags &= ~(255<<8);
+    tasks[my_index].control_flags |= mask<<8;
+    return 0;
+}
+
+LUAFN(set_subscriptions)
+{
+    ASSURE_INITIALIZED;
+    luaL_checktype(L, 1, LUA_TTABLE);
+    int flags = tasks[my_index].control_flags;
+    for (int i=0; announcements[i]; i++) {
+	lua_getfield(L, 1, announcements[i]);
+	flags = (flags & ~(1<<SUBSCRIPT_SHIFT+i)) |
+	    (lua_isnil(L, -1) ? 0 : (1<<SUBSCRIPT_SHIFT+i));
+	lua_pop(L, 1);
+    }
+    tasks[my_index].control_flags = flags;
+    printf("FLAGS = %d\n", flags);
+    return 0;
+}
+
+LUAFN(set_priority) {
+#ifdef __linux__
+    ASSURE_INITIALIZED;
+    int task_ix;
+    struct sched_param param;
+
+    param.sched_priority = lua_tointeger(L, 1);
+    const char *policy_name = lua_tostring(L, 2);
+    int policy = SCHED_OTHER;
+    if (policy_name != NULL)
+	if (!strcmp(policy_name, "RR"))
+	    policy = SCHED_RR;
+	else if (!strcmp(policy_name, "FIFO"))
+	    policy = SCHED_FIFO;
+    if (lua_isnone(L, 3))
+	task_ix = my_index;
+    else
+	task_ix = validate_task(L, 3);
+    lua_pushinteger(L, task_ix);
+    lua_pushnil(L);
+    if (task_ix >= 0 &&
+	pthread_setschedparam(tasks[task_ix].thread, policy, &param) == 0) {
+	lua_pop(L, 1);
+	lua_pushboolean(L, true);
+    }
+    lua_insert(L, -2);
+    return 2;
+#else
+    luaL_error(L, "**NOT IMPLEMENTED**");
+#endif
+}
+
+LUALIB_API int luaopen_taskmgr(lua_State *L)
+{
+    const luaL_Reg funcptrs[] = {
+	FN_ENTRY(initialize),
+	FN_ENTRY(lookup_task),
+	FN_ENTRY(request_quit),
+	FN_ENTRY(interrupt_task),
+	FN_ENTRY(quit_requested),
+	FN_ENTRY(shutdown),
+	FN_ENTRY(sendmsg),
+	FN_ENTRY(sendtypemsg),
+	FN_ENTRY(broadcast),
+	FN_ENTRY(set_reception),
+	FN_ENTRY(set_subscriptions),
+	FN_ENTRY(waitmsg),
+	FN_ENTRY(getmsg),
+	FN_ENTRY(status),
+	FN_ENTRY(set_priority), // Requires special privs.
+	{ NULL, NULL }
+    };
+
+    luaL_register(L, "taskmgr", funcptrs);
+    lua_getglobal(L, "string");
+    lua_getfield(L, -1, "dump");
+    lua_pushcclosure(L, LUAFN_NAME(create_task), 1);
+    lua_remove(L, -2);
+    lua_setfield(L, -2, "create_task");
+    
+    return 1;
+}

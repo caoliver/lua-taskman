@@ -1,0 +1,41 @@
+;; -*- mode: emacs-lisp; coding: emacs-mule; -*-
+;; --------------------------------------------------------------------------
+;; Desktop File for Emacs
+;; --------------------------------------------------------------------------
+;; Created Tue Jul 30 15:09:26 2019
+;; Desktop file format version 208
+;; Emacs version 26.1
+
+;; Global section:
+(setq desktop-saved-frameset [frameset 1 (23872 38374 523199 382000) (desktop . "208") "oliver@radish" nil nil ((((minibuffer . t) (undecorated) (override-redirect) (font-backend xft x) (font-parameter . "-misc-fixed-medium-r-semicondensed-*-13-*-*-*-*-*-*-*") (font . "-Misc-Fixed-medium-r-semicondensed-*-13-*-*-*-c-60-iso10646-1") (border-width . 0) (internal-border-width . 1) (right-divider-width . 0) (bottom-divider-width . 0) (vertical-scroll-bars) (horizontal-scroll-bars) (foreground-color . "black") (background-color . "#ecf0f0") (mouse-color . "black") (border-color . "black") (screen-gamma) (line-spacing) (left-fringe . 0) (right-fringe . 0) (no-special-glyphs) (scroll-bar-foreground) (scroll-bar-background) (menu-bar-lines . 0) (tool-bar-lines . 0) (height . 36) (title) (wait-for-wm . t) (tool-bar-position . top) (inhibit-double-buffering) (icon-type . t) (auto-raise) (auto-lower) (cursor-type . box) (scroll-bar-width . 0) (scroll-bar-height . 0) (alpha) (no-focus-on-map) (no-accept-focus) (fullscreen) (visibility . t) (skip-taskbar) (z-group) (environment "XAUTHORITY=/home/staff/oliver/.Xauthority" "G_BROKEN_FILENAMES=1" "DISPLAY=:0" "WINDOWPATH=6" "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/share/pkgconfig:/usr/lib64/pkgconfig:/usr/share/pkgconfig" "LESSOPEN=|lesspipe.sh %s" "PEKWM_THEME_PATH=/usr/local/share/pekwm/themes" "LOGNAME=oliver" "LESS=-M" "LOGIN_PROFILE_WAS_RUN=1" "LS_OPTIONS=-F -b -T 0 --color=auto" "CLIENT_PID=1211" "TMPPREFIX=/home/staff/oliver/.tmpdir/zsh" "CSSTRNGS=/usr/local/dsp/share/locale" "HOME=/home/staff/oliver" "SHLVL=1" "PEKWM_SCRIPT_PATH=/usr/local/share/pekwm/scripts" "SSH_ASKPASS=/usr/local/bin/gtk-led-askpass" "QT4DIR=/usr/lib64/qt" "CLIENT_WINDOW=20971628" "LANG=en_US" "EDITOR=/bin/mg" "VDPAU_LOG=0" "PWD=/home/staff/oliver" "INPUTRC=/etc/inputrc" "LC_COLLATE=C" "PATH=/usr/local/bin:/usr/local/dsp/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/texmf/bin:/home/staff/oliver/.local/bin" "MINICOM=-c on" "T1LIB_CONFIG=/usr/share/t1lib/t1lib.config" "CSCOPE_EDITOR=cscope_editor" "PAGER=/usr/bin/less" "PEKWM_CONFIG_FILE=/home/staff/oliver/.pekwm/config" "SSH_AUTH_SOCK=/home/staff/oliver/.tmpdir/ssh-1M5OOr5wV0wP/agent.27210" "OPCODEDIR64=/usr/local/dsp/lib/csound/plugins64" "GDK_USE_XFT=1" "STDGCCOPTS=-O3 -mtune=generic" "LS_COLORS=*.tlz=01;31:*.lzma=01;31:*.txz=01;31:*.xz=01;31:" "USER=oliver" "CDPATH=.:/home/staff/oliver" "SQUEAK_SWAPBTN=1" "GIT_EDITOR=/bin/mg -n" "ALSA_CTL_CARD=PCH" "FPATH=/usr/local/share/zsh/site-functions:/usr/local/share/zsh/site-functions:/usr/share/zsh/site-functions:/usr/share/zsh/5.2/functions:/home/staff/oliver/.local/etc/zsh" "GTAGSLABEL=pygments" "XSESSION_PID=27210" "SUDO_ASKPASS=/usr/local/bin/gtk-led-askpass" "XDM_SESSION=1" "TMPDIR=/home/staff/oliver/.tmpdir" "ALSA_PCM_CARD=PCH" "SHELL=/bin/zsh" "TERM=dumb" "PEKWM_ETC_PATH=/usr/local/etc/pekwm" "HOSTNAME=radish.private" "GTAGSCONF=/usr/local/share/gtags/gtags.conf" "SSH_AGENT_PID=27247" "MANPATH=/usr/local/man:/usr/man:/usr/share/texmf/man:/usr/local/share/man:/home/staff/oliver/.local/man" "CPLUS_INCLUDE_PATH=/usr/lib64/qt/include") (display-type . color) (background-mode . light) (cursor-color . "red3") (frameset--id . "C417-D2D4-B886-AAF0") (frameset--mini t . t) (width . 80) (modeline . t) (unsplittable) (left . 0) (top . 0) (icon-name) (display . ":0") (explicit-name)) ((min-height . 4) (min-width . 10) (min-height-ignore . 2) (min-width-ignore . 2) (min-height-safe . 1) (min-width-safe . 2) (min-pixel-height . 52) (min-pixel-width . 60) (min-pixel-height-ignore . 26) (min-pixel-width-ignore . 12) (min-pixel-height-safe . 13) (min-pixel-width-safe . 12)) leaf (pixel-width . 480) (pixel-height . 455) (total-width . 80) (total-height . 35) (normal-height . 1.0) (normal-width . 1.0) (buffer "taskmgr.c" (selected . t) (hscroll . 0) (fringes 0 0 nil) (margins nil) (scroll-bars nil 0 t nil 0 t) (vscroll . 0) (dedicated) (point . 4132) (start . 3860))) (((minibuffer . t) (vertical-scroll-bars) (right-fringe . 0) (left-fringe . 0) (menu-bar-lines . 0) (tool-bar-lines . 0) (foreground-color . "black") (background-color . "#ecf0f0") (display-type . mono) (background-mode . light) (cursor-color . "red3") (font . "tty") (height . 11) (width . 10) (modeline . t) (unsplittable) (frameset--id . "156B-00B1-0C58-9980") (frameset--mini t)) ((min-height . 4) (min-width . 10) (min-height-ignore . 2) (min-width-ignore . 2) (min-height-safe . 1) (min-width-safe . 2) (min-pixel-height . 4) (min-pixel-width . 10) (min-pixel-height-ignore . 2) (min-pixel-width-ignore . 2) (min-pixel-height-safe . 1) (min-pixel-width-safe . 2)) leaf (pixel-width . 10) (pixel-height . 10) (total-width . 10) (total-height . 10) (normal-height . 1.0) (normal-width . 1.0) (buffer "*scratch*" (selected) (hscroll . 0) (fringes 0 0 nil) (margins nil) (scroll-bars nil 0 t nil 0 t) (vscroll . 0) (dedicated) (point . 1) (start . 1))))])
+(setq desktop-missing-file-warning nil)
+(setq tags-file-name nil)
+(setq tags-table-list nil)
+(setq register-alist nil)
+(setq file-name-history '("~/mnt/lab/luataskmgr/.bookmark" "/home/staff/oliver/mnt/lab/luataskmgr/test.lua" "/home/staff/oliver/mnt/lab/luataskmgr/taskmgr.c" "/home/staff/oliver/.mnt/.archive/soft/hll/lua/extensions/lua-freezer/README" "/home/staff/oliver/mnt/lab/luataskmgr/luathread/t.lua" "/home/staff/oliver/mnt/lab/luataskmgr/luathread/tt.c" "/home/staff/oliver/mnt/archive/soft/hll/lua/extensions/lua-freezer/freezer.c" "/home/staff/oliver/mnt/lab/luataskmgr/taskmgr.c" "/home/staff/oliver/scratch/luataskmgr/taskmgr.c"))
+
+;; Buffer section -- buffers listed in same order as in buffer list:
+(desktop-create-buffer 208
+  "/home/staff/oliver/mnt/lab/luataskmgr/taskmgr.c"
+  "taskmgr.c"
+  'c-mode
+  '(abbrev-mode flx-ido-mode which-key-mode)
+  4132
+  '(4412 nil)
+  nil
+  nil
+  '((buffer-display-time 23872 38359 155803 988000) (buffer-file-coding-system . undecided-unix))
+  '((mark-ring (3999 3607 3589 3999 4079 4259 4353 4259 4353 4135 4189 4181 4205 4105 4164 4098))))
+
+(desktop-create-buffer 208
+  "/home/staff/oliver/mnt/lab/luataskmgr/test.lua"
+  "test.lua"
+  'lua-mode
+  '(flx-ido-mode which-key-mode)
+  27
+  '(18 nil)
+  nil
+  nil
+  '((buffer-display-time 23872 34276 21174 0) (buffer-file-coding-system . undecided-unix))
+  '((mark-ring (11 1))))
+
