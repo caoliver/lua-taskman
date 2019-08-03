@@ -1067,7 +1067,7 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     lua_pushcclosure(L, LUAFN_NAME(waitmsg), 1);
     lua_setfield(L, -3, "waitmsg");
     lua_pushcclosure(L, LUAFN_NAME(from_now), 1);
-    lua_setfield(L, -2, "seconds_from_now");
+    lua_setfield(L, -2, "from_now");
     
     return 1;
 }
