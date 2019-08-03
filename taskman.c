@@ -1,4 +1,5 @@
 #define _XOPEN_SOURCE 500
+#define _GNU_SOURCE
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -11,6 +12,7 @@
 #include <semaphore.h>
 #include <string.h>
 #include <time.h>
+#include <sched.h>
 
 #include "lua_head.h"
 
@@ -23,7 +25,7 @@ void show_stack(lua_State *L)
 
 #include "mmaputil.h"
 
-#define MIN_TASKS 8
+#define MIN_TASKS 64
 // This is a uint16_t.  Maybe make this smaller.
 #define MAX_TASKS 65536
 #define MIN_CONTROL_BUFFER_SIZE (1<<18)
@@ -44,15 +46,18 @@ void show_stack(lua_State *L)
 
 // Client message types
 #define NORMAL_CLIENT_MSG 0
+#define TASK_BIRTH_ANNOUNCE 1
+#define CHILD_SUCCESS 2
+#define CHILD_FAILURE 3
 
-#define SUBSCRIPT_SHIFT 8
+#define BROADCAST_SHIFT 8
 #define QUIT_FLAG 1
 
-#define ANNOUCEMENT_SHIFT 16
-char *announcements = {
-#define ANNOUNCE_CHLD 1<<ANNOUCEMENT_SHIFT
+#define SUBSCRIBE_SHIFT 16
+char *announcements[] = {
+#define ANNOUNCE_CHLD (1<<SUBSCRIBE_SHIFT)
     "child_dies",
-#define ANNOUNCE_NNTASK 2<<ANNOUCEMENT_SHIFT
+#define ANNOUNCE_NNTASK (2<<SUBSCRIBE_SHIFT)
     "new_named_task",
     NULL};
 
@@ -76,19 +81,19 @@ static void sigexit(lua_State *L, lua_Debug *ar)
   lua_error(L);
 }
 
-void sigusr1_handler(int sig)
+static void sigusr1_handler(int sig)
 {
     lua_sethook(L, sigexit, LUA_MASKCALL | LUA_MASKRET | LUA_MASKCOUNT, 1);
 }
 
 // This crashes VM completely under some circumstances.
-void sigusr2_handler(int sig)
+static void sigusr2_handler(int sig)
 {
     lua_pushstring(L, "Hard interrupt");
     lua_error(L);
 }
 
-sem_t task_running_sem;
+static sem_t task_running_sem;
 
 struct task {
     uint16_t nonce, last_active_nonce;
@@ -107,7 +112,7 @@ struct task {
 };
 
 static uint16_t num_tasks;
-struct task *tasks, *free_tasks;
+static struct task *tasks;
 
 pthread_t housekeeper_thread;
 
@@ -117,7 +122,7 @@ static size_t control_channel_size;
 static uint8_t *control_channel_store;
 static struct circbuf control_channel_buf;
 static sem_t control_channel_sem;
-pthread_mutex_t control_channel_mutex;
+static pthread_mutex_t control_channel_mutex;
 
 struct message {
     uint16_t type;
@@ -209,27 +214,63 @@ static int wait_for_reply(lua_State *L)
 
 static void *new_thread(void *luastate)
 {
+    sem_post(&task_running_sem);
+    bool succeeded = false;
     L = luastate;
     // Stack:
     //   3 - my index
     //   2 - program description table
     //   1 - Traceback function
     my_index = lua_tointeger(L, -1);
-    
     struct task *task = &tasks[my_index];
+    lua_pop(L, 1);
+
+    // Fetch the program.
+    lua_pushstring(L, "program");
+    lua_rawget(L, -2);
+    int rc = 0;
+    if (lua_type(L, -1) == LUA_TSTRING &&
+	lua_objlen(L, -1) > 1) {
+	const char *progtext=lua_tostring(L, -1);
+	if (progtext[0] == ':')
+	    rc = luaL_loadfile(L, &progtext[1]);
+	else
+	    rc = luaL_loadstring(L, progtext);
+	lua_remove(L, -2);
+    }
+    // If we don't have a function now, then caller made a booboo.
+    if (!lua_isfunction(L, -1)) {
+	if (rc == 0)
+	    lua_pushfstring(L, "Invalid program type: %s",
+			    lua_typename(L,
+					 lua_type(L, -1)));
+	goto bugout;
+    }
+
+    // Setup arguments from program description.
+    int arg_count = 0;
+    while (1) {
+	lua_rawgeti(L, 2, ++arg_count);
+	if (lua_isnil(L, -1)) {
+	    lua_pop(L, 1);
+	    arg_count--;
+	    break;
+	}
+    }
+    // We're done with the program description now.
+    lua_remove(L, 2);
     if (++task->last_active_nonce == 0)
 	// Nonce zero means unused, so skip over it.
 	task->last_active_nonce = 1;
     task->nonce = task->last_active_nonce;
 
-    sem_post(&task_running_sem);
-
-    int arg_count = lua_tointeger(L, -2);
-    lua_pop(L, 2);
-    if (lua_pcall(L, arg_count, LUA_MULTRET, 1)) {
-	// Error message on top.
-	puts(lua_tostring(L, -1));
-    } else {
+    if (tasks[my_index].name) {
+	for (int i=0; i < num_tasks; i++)
+	    if (tasks[i].control_flags & ANNOUNCE_NNTASK)
+		send_client_msg(&tasks[i], TASK_BIRTH_ANNOUNCE, "", 0);
+    }
+    
+    if (!lua_pcall(L, arg_count, LUA_MULTRET, 1)) {
 	int retvals = lua_gettop(L) - 1;
 	lua_newtable(L);
 	lua_insert(L, 2);
@@ -241,14 +282,19 @@ static void *new_thread(void *luastate)
 	lua_pushcclosure(L, freezer_freeze, 1);
 	lua_insert(L, 2);
 	lua_pop(L, 1);
-	if (lua_pcall(L, 1, 1, 1)) {
-	    // Error message on top.
-	    puts(lua_tostring(L, -1));
-	} else {
-	    // Frozen return values on top.
+	if (!lua_pcall(L, 1, 1, 1)) {
+	    succeeded = true;
 	}
     }
 
+bugout:
+    if (tasks[task->parent_index].nonce == task->parent_nonce &&
+	tasks[task->parent_index].control_flags & ANNOUNCE_CHLD)
+	send_client_msg(&tasks[task->parent_index],
+			succeeded ? CHILD_SUCCESS : CHILD_FAILURE,
+			lua_tostring(L, -1), lua_objlen(L, -1));
+	
+    task->nonce = 0;
     if (send_ctl_msg(THREAD_EXITS, "", 0))
 	errx(1, "Can't send task exit message.");
     lua_close(L);
@@ -341,44 +387,10 @@ static int create_task(uint8_t *taskdescr, int size,
     lua_pop(newstate, 1);
     task->parent_index = sender;
     // Is this valid.
-    task->parent_index = sender_nonce;
+    task->parent_nonce = sender_nonce;
     // Requestor waits on this for replies from housekeeper.
     sem_init(&task->housekeeper_pending, 0, 0);
     // Get the function, file, or string chunk.
-    lua_pushstring(newstate, "program");
-    lua_rawget(newstate, -2);
-    int rc = 0;
-    if (lua_type(newstate, -1) == LUA_TSTRING &&
-	lua_objlen(newstate, -1) > 1) {
-	const char *progtext=lua_tostring(newstate, -1);
-	if (progtext[0] == ':')
-	    rc = luaL_loadfile(newstate, &progtext[1]);
-	else
-	    rc = luaL_loadstring(newstate, progtext);
-	lua_remove(newstate, -2);
-    }
-    // If we don't have a function now, then caller made a booboo.
-    if (!lua_isfunction(newstate, -1)) {
-	if (rc == 0)
-	    lua_pushfstring(newstate, "Invalid program type: %s",
-			    lua_typename(newstate,
-					 lua_type(newstate, -1)));
-	goto bugout;
-    }
-
-    // Setup arguments from program description.
-    int arg_count = 0;
-    while (1) {
-	lua_rawgeti(newstate, 2, ++arg_count);
-	if (lua_isnil(newstate, -1)) {
-	    lua_pop(newstate, 1);
-	    arg_count--;
-	    break;
-	}
-    }
-    // We're done with the program description now.
-    lua_remove(newstate, 2);
-    lua_pushinteger(newstate, arg_count);
     lua_pushinteger(newstate, freetask);
     if (pthread_create(&task->thread, NULL, new_thread,
 		       (void *)newstate) < 0) {
@@ -466,8 +478,13 @@ static void *housekeeper(void *dummy)
 		tasks[sender].query_index = -1;
 	    else {
 		lua_rawget(L, 1);
-		tasks[sender].query_index =
-		    lua_isnil(L,-1) ? -1 : lua_tointeger(L, -1);
+		if (lua_isnil(L, -1))
+		    tasks[sender].query_index = -1;
+		else {
+		    tasks[sender].query_index = lua_tointeger(L, -1);
+		    tasks[sender].query_extra =
+			tasks[tasks[sender].query_index].nonce;
+		}
 	    }
 	    sem_post(&tasks[sender].housekeeper_pending);
 	    break;
@@ -511,7 +528,6 @@ static void *housekeeper(void *dummy)
 
 	    cb_release(&control_channel_buf,
 		       ALIGN(sizeof(struct message)+size));
-	    tasks[sender].nonce=0;
 	    tasks[sender].control_flags=0;
 	    pthread_join(tasks[sender].thread, NULL);
 	    finished++;
@@ -553,7 +569,6 @@ static void *housekeeper(void *dummy)
     }
 
 fini:
-    puts("DONE");
     sem_post(&tasks[0].housekeeper_pending);
     lua_close(L);
     signal(SIGUSR1, SIG_DFL);
@@ -569,7 +584,7 @@ static int initialize(lua_State *L,
 		      size_t main_incoming_channel_size)
 {
     if (initialized)
-	luaL_error(L, "TASKMGR is already initialized");
+	luaL_error(L, "TASKMAN is already initialized");
     initialized = true;
 
     lua_newtable(L);
@@ -779,7 +794,9 @@ static int getmsg(lua_State *L)
     cb_release(&task->incoming_queue, ALIGN(sizeof(struct message)+size));
     if (sender_task->name) {
 	lua_pushstring(L, sender_task->name);
-	return 3;
+	lua_pushinteger(L, sender);
+	lua_pushinteger(L, sender_task->nonce);
+	return 5;
     }
     lua_pushinteger(L, sender);
     lua_pushinteger(L, sender_task->nonce);
@@ -857,12 +874,15 @@ LUAFN(broadcast)
     unsigned int send_count = 0;
     const char *msg =lua_tolstring(L, 1, &msglen);
     int type = lua_tointeger(L, 2);
-    if (type > 255 || type < 1)
+    if (type > 255 || type < 0)
 	luaL_error(L, "Bad broadcast message type");
+    int channels = lua_tointeger(L, 3);
+    if (channels > 255 || channels < 1)
+	luaL_error(L, "Bad broadcast channel selection");
     for (int i = 0; i < num_tasks; i++) {
 	if (i != my_index &&
 	    tasks[i].nonce != 0 &&
-	    tasks[i].control_flags & type<<8)
+	    tasks[i].control_flags & channels<<BROADCAST_SHIFT)
 	    if (send_client_msg(&tasks[i], type | 0x100, msg, msglen) >=0)
 		send_count++;
     }
@@ -876,8 +896,8 @@ LUAFN(set_reception)
     int mask = lua_tointeger(L, 1);
     if (mask < 0 || mask > 255)
 	luaL_error(L, "Bad broadcast mask");
-    tasks[my_index].control_flags &= ~(255<<8);
-    tasks[my_index].control_flags |= mask<<8;
+    tasks[my_index].control_flags &= ~(255<<BROADCAST_SHIFT);
+    tasks[my_index].control_flags |= mask<<BROADCAST_SHIFT;
     return 0;
 }
 
@@ -888,29 +908,25 @@ LUAFN(set_subscriptions)
     int flags = tasks[my_index].control_flags;
     for (int i=0; announcements[i]; i++) {
 	lua_getfield(L, 1, announcements[i]);
-	flags = (flags & ~(1<<SUBSCRIPT_SHIFT+i)) |
-	    (lua_isnil(L, -1) ? 0 : (1<<SUBSCRIPT_SHIFT+i));
+	flags = (flags & ~(1<<SUBSCRIBE_SHIFT+i)) |
+	    (lua_isnil(L, -1) ? 0 : (1<<SUBSCRIBE_SHIFT+i));
 	lua_pop(L, 1);
     }
     tasks[my_index].control_flags = flags;
-    printf("FLAGS = %d\n", flags);
     return 0;
 }
 
-LUAFN(set_priority) {
+LUAFN(set_priority)
+{
 #ifdef __linux__
     ASSURE_INITIALIZED;
     int task_ix;
     struct sched_param param;
 
     param.sched_priority = lua_tointeger(L, 1);
-    const char *policy_name = lua_tostring(L, 2);
     int policy = SCHED_OTHER;
-    if (policy_name != NULL)
-	if (!strcmp(policy_name, "RR"))
-	    policy = SCHED_RR;
-	else if (!strcmp(policy_name, "FIFO"))
-	    policy = SCHED_FIFO;
+    if (!lua_isnil(L, 2))
+	policy = lua_tointeger(L, 2);
     if (lua_isnone(L, 3))
 	task_ix = my_index;
     else
@@ -929,7 +945,31 @@ LUAFN(set_priority) {
 #endif
 }
 
-LUALIB_API int luaopen_taskmgr(lua_State *L)
+LUAFN(set_affinity)
+{
+#ifdef __linux__
+    luaL_checktype(L, 1, LUA_TTABLE);
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    int cpucount = sysconf(_SC_NPROCESSORS_CONF);
+    int i = 1;
+    while (true) {
+	lua_rawgeti(L, 1, i++);
+	if (lua_isnil(L, -1)) break;
+	int cpu = luaL_checkinteger(L ,-1);
+	if (cpu < 0 || cpu >= cpucount)
+	    luaL_error(L, "Bad cpu number %d", cpu);
+	lua_pop(L, 1);
+	CPU_SET(cpu, &cpuset);
+    }
+    lua_pushboolean(L, sched_setaffinity(0, sizeof(cpuset), &cpuset) == 0);
+    return 1;
+#else
+    luaL_error(L, "**NOT IMPLEMENTED**");
+#endif
+}
+
+LUALIB_API int luaopen_taskman(lua_State *L)
 {
     const luaL_Reg funcptrs[] = {
 	FN_ENTRY(initialize),
@@ -947,10 +987,31 @@ LUALIB_API int luaopen_taskmgr(lua_State *L)
 	FN_ENTRY(getmsg),
 	FN_ENTRY(status),
 	FN_ENTRY(set_priority), // Requires special privs.
+	FN_ENTRY(set_affinity),
 	{ NULL, NULL }
     };
 
-    luaL_register(L, "taskmgr", funcptrs);
+    luaL_register(L, "taskman", funcptrs);
+
+    lua_pushinteger(L, CHILD_SUCCESS);
+    lua_setfield(L, -2, "child_success");
+    lua_pushinteger(L, CHILD_FAILURE);
+    lua_setfield(L, -2, "child_failure");
+
+    lua_newtable(L);
+    lua_pushinteger(L, SCHED_RR);
+    lua_setfield(L, -2, "rr");
+    lua_pushinteger(L, SCHED_FIFO);
+    lua_setfield(L, -2, "fifo");
+    lua_pushinteger(L, SCHED_IDLE);
+    lua_setfield(L, -2, "idle");
+    lua_pushinteger(L, SCHED_BATCH);
+    lua_setfield(L, -2, "batch");
+    lua_pushinteger(L, SCHED_OTHER);
+    lua_setfield(L, -2, "other");
+    lua_setfield(L, -2, "sched");
+
+    
     lua_getglobal(L, "string");
     lua_getfield(L, -1, "dump");
     lua_pushcclosure(L, LUAFN_NAME(create_task), 1);

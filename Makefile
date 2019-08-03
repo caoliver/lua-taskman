@@ -3,11 +3,11 @@ CFLAGS+=-Wall -Wno-parentheses -O2 -mtune=generic -fomit-frame-pointer -std=c99
 CFLAGS+=-D_POSIX_C_SOURCE=200112L
 LDFLAGS+=-lluajit -ldl -pthread -lm
 
-all: taskmgr.so
+all: taskman.so
 
 globals.h:
 
-taskmgr.so: taskmgr.o mmaputil.so /usr/local/lib/lua/5.1/freezer.so
+taskman.so: taskman.o mmaputil.so /usr/local/lib/lua/5.1/freezer.so
 	gcc -Wl,-rpath='$$ORIGIN' -shared $(LDFLAGS) -o $@ $^
 
 %.so: %.o

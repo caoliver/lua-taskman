@@ -3,10 +3,10 @@ local b='very'
 local function f() print 'hello, there' end
 
 -- Launch thread which...
-require 'taskmgr'.create_task{
+require 'taskman'.create_task{
    program=function (fn)
       -- Launches a second thread that takes...
-      require 'taskmgr'.create_task{program=fn,'hairy'}
+      require 'taskman'.create_task{program=fn,'hairy'}
    end,
    -- a function with local refs  as argument.
    function (a)
