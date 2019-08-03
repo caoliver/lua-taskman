@@ -812,22 +812,44 @@ LUAFN(getmsg)
     return rc;
 }
 
+LUAFN(timestamp_name)
+{
+    lua_pushfstring(L, "timestamp (%p)", lua_topointer(L, 1));
+    return 1;
+}
+
+LUAFN(from_now)
+{
+    double interval = lua_tonumber(L, 1);
+    if (interval < 0)
+	interval = 0;
+    struct timespec *ts;
+    ts = lua_newuserdata(L, sizeof(*ts));
+    clock_gettime(CLOCK_REALTIME, ts);
+    interval += ts->tv_sec + (double)1E-9*ts->tv_nsec;
+    ts->tv_sec = interval;
+    ts->tv_nsec = 1E9*(interval - ts->tv_sec);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_setmetatable(L, -2);
+    lua_replace(L, 1);
+    return 1;
+}
+
 LUAFN(waitmsg)
 {
     ASSURE_INITIALIZED;
     if (lua_isnone(L, 1))
 	sem_wait(&tasks[my_index].incoming_sem);
     else {
-	double delay = luaL_checknumber(L, 1);
-	struct timespec ts;
-	clock_gettime(CLOCK_REALTIME, &ts);
-	if (delay < 0)
-	    delay = 0;
-	delay += ts.tv_sec + (double)1E-9*ts.tv_nsec;
-	ts.tv_sec = delay;
-	ts.tv_nsec = 1E9*(delay - ts.tv_sec);
-	if (sem_timedwait(&tasks[my_index].incoming_sem, &ts) < 0)
+	if (lua_isnumber(L, 1))
+	    CALL_LUAFN(from_now);
+	if (!lua_getmetatable(L, 1) ||
+	    !lua_rawequal(L, -1, lua_upvalueindex(1)))
+	    luaL_error(L, "Bad time spec");
+	struct timespec *ts = lua_touserdata(L, -2);
+	if (sem_timedwait(&tasks[my_index].incoming_sem, ts) < 0)
 	    return 0;
+	lua_settop(L, 0);
     }
     int rc = getmsg(L);
     return rc;
@@ -983,7 +1005,7 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(broadcast),
 	FN_ENTRY(set_reception),
 	FN_ENTRY(set_subscriptions),
-	FN_ENTRY(waitmsg),
+	FN_ENTRY(from_now),
 	FN_ENTRY(getmsg),
 	FN_ENTRY(status),
 	FN_ENTRY(set_priority), // Requires special privs.
@@ -1017,6 +1039,18 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     lua_pushcclosure(L, LUAFN_NAME(create_task), 1);
     lua_remove(L, -2);
     lua_setfield(L, -2, "create_task");
+
+    // Add metatable for timestamps to waitmsg() and from_now().
+    lua_newtable(L);
+    lua_pushstring(L, "Private");
+    lua_setfield(L, -2, "__metatable");
+    lua_pushcfunction(L, LUAFN_NAME(timestamp_name));
+    lua_setfield(L, -2, "__tostring");
+    lua_pushvalue(L, -1);
+    lua_pushcclosure(L, LUAFN_NAME(waitmsg), 1);
+    lua_setfield(L, -3, "waitmsg");
+    lua_pushcclosure(L, LUAFN_NAME(from_now), 1);
+    lua_setfield(L, -2, "seconds_from_now");
     
     return 1;
 }
