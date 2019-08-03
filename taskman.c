@@ -16,12 +16,15 @@
 
 #include "lua_head.h"
 
+#if 0
+// Leave this here for feature debugging
 void show_stack(lua_State *L)
 {
     printf("TOP IS %d\n", lua_gettop(L));
     for (int i = lua_gettop(L); i > 0; i--)
 	printf("\t%d:\t%s\n", i, lua_typename(L, lua_type(L, i)));
 }
+#endif
 
 #include "mmaputil.h"
 
@@ -216,6 +219,7 @@ static void *new_thread(void *luastate)
 {
     sem_post(&task_running_sem);
     bool succeeded = false;
+    bool show_errors;
     L = luastate;
     // Stack:
     //   3 - my index
@@ -223,6 +227,12 @@ static void *new_thread(void *luastate)
     //   1 - Traceback function
     my_index = lua_tointeger(L, -1);
     struct task *task = &tasks[my_index];
+    lua_pop(L, 1);
+
+    // Set error printing as asked.
+    lua_pushstring(L, "show_errors");
+    lua_rawget(L, -2);
+    show_errors = lua_toboolean(L, -1);
     lua_pop(L, 1);
 
     // Fetch the program.
@@ -288,6 +298,13 @@ static void *new_thread(void *luastate)
     }
 
 bugout:
+    if (!succeeded && show_errors)
+	if (task->name)
+	    fprintf(stderr, "Child %s failed: %s\n",
+		    task->name, lua_tostring(L, -1));
+	else
+	    fprintf(stderr, "Child %d,%d failed: %s\n",
+		    my_index, task->nonce, lua_tostring(L, -1));
     if (tasks[task->parent_index].nonce == task->parent_nonce &&
 	tasks[task->parent_index].control_flags & ANNOUNCE_CHLD)
 	send_client_msg(&tasks[task->parent_index],
