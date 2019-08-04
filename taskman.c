@@ -49,9 +49,9 @@ void show_stack(lua_State *L)
 
 // Client message types
 #define NORMAL_CLIENT_MSG 0
-#define TASK_BIRTH_ANNOUNCE 1
-#define CHILD_SUCCESS 2
-#define CHILD_FAILURE 3
+#define TASK_BIRTH_ANNOUNCE 65536
+#define CHILD_SUCCESS 65537
+#define CHILD_FAILURE 65538
 
 #define BROADCAST_SHIFT 8
 #define QUIT_FLAG 1
@@ -130,10 +130,10 @@ static sem_t control_channel_sem;
 static pthread_mutex_t control_channel_mutex;
 
 struct message {
-    uint16_t type;
+    uint32_t type;
+    uint32_t size;
     uint16_t sender;
     uint16_t nonce;
-    uint32_t size;
     uint8_t payload[0];
 };
 
@@ -160,7 +160,7 @@ LUAFN(traceback)
 extern int freezer_thaw_buffer(lua_State *);
 extern int freezer_freeze(lua_State *L);
 
-int send_ctl_msg(uint16_t command, const char *payload, uint32_t size)
+int send_ctl_msg(uint32_t command, const char *payload, uint32_t size)
 {
     uint32_t msgsize = ALIGN(sizeof(struct message) + size);
     bool success = false;
@@ -183,7 +183,7 @@ int send_ctl_msg(uint16_t command, const char *payload, uint32_t size)
 }
 
 int send_client_msg(struct task *task,
-		    uint16_t type, const char *payload, uint32_t size)
+		    uint32_t type, const char *payload, uint32_t size)
 {
     uint32_t msgsize = ALIGN(sizeof(struct message) + size);
     bool success = false;
@@ -1071,6 +1071,14 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     lua_setfield(L, -2, "other");
     lua_setfield(L, -2, "sched");
 
+    lua_newtable(L);
+    lua_pushinteger(L, TASK_BIRTH_ANNOUNCE);
+    lua_setfield(L, -2, "born");
+    lua_pushinteger(L, CHILD_SUCCESS);
+    lua_setfield(L, -2, "exit");
+    lua_pushinteger(L, CHILD_SUCCESS);
+    lua_setfield(L, -2, "fail");
+    lua_setfield(L, -2, "announce");
 
     lua_getglobal(L, "string");
     lua_getfield(L, -1, "dump");
