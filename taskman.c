@@ -200,7 +200,8 @@ int send_client_msg(struct task *task,
 	cb_produce(&task->incoming_queue, msgsize);
 	success = true;
     }
-    if (__atomic_sub_fetch(&task->queue_in_use, 1, __ATOMIC_SEQ_CST) == 0) {
+    if (__atomic_sub_fetch(&task->queue_in_use, 1, __ATOMIC_SEQ_CST) == 0 &&
+	tasks->incoming_store) {
 	free_twinmap(task->incoming_store, task->incoming_queue.size);
 	tasks->incoming_store = 0;
     }
@@ -569,7 +570,8 @@ static void *housekeeper(void *dummy)
 	    }
 	    // Toss message queue store if GCable.
 	    if (__atomic_sub_fetch(&tasks[sender].queue_in_use, 1,
-				   __ATOMIC_SEQ_CST) == 0) {
+				   __ATOMIC_SEQ_CST) == 0 &&
+		tasks->incoming_store) {
 		free_twinmap(tasks[sender].incoming_store,
 			     tasks[sender].incoming_queue.size);
 		tasks[sender].incoming_store = 0;
