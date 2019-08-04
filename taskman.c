@@ -319,7 +319,6 @@ bugout:
 			lua_tostring(L, -1), lua_objlen(L, -1));
     }
 
-    task->nonce = 0;
     if (send_ctl_msg(THREAD_EXITS, "", 0))
 	errx(1, "Can't send task exit message.");
     lua_close(L);
@@ -575,6 +574,7 @@ static void *housekeeper(void *dummy)
 			     tasks[sender].incoming_queue.size);
 		tasks[sender].incoming_store = 0;
 	    }
+	    tasks[sender].nonce = 0;
 	    break;
 	case REQUEST_SHUTDOWN:
 	    cb_release(&control_channel_buf,
@@ -1043,7 +1043,6 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(broadcast),
 	FN_ENTRY(set_reception),
 	FN_ENTRY(set_subscriptions),
-	FN_ENTRY(from_now),
 	FN_ENTRY(getmsg),
 	FN_ENTRY(status),
 	FN_ENTRY(set_priority), // Requires special privs.
