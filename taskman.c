@@ -237,7 +237,7 @@ static void *new_thread(void *luastate)
     // These aren't GCable.
     __atomic_add_fetch(&task->queue_in_use, 1, __ATOMIC_SEQ_CST);
     __atomic_add_fetch(&task->name_in_use, 1, __ATOMIC_SEQ_CST);
-	
+
     // Set error printing as asked.
     lua_getfield(L, -1, "show_errors");
     show_errors = lua_toboolean(L, -1);
@@ -286,7 +286,7 @@ static void *new_thread(void *luastate)
 		tasks[i].control_flags & ANNOUNCE_NNTASK)
 		send_client_msg(&tasks[i], TASK_BIRTH_ANNOUNCE, "", 0);
     }
-    
+
     if (!lua_pcall(L, arg_count, LUA_MULTRET, 1)) {
 	int retvals = lua_gettop(L) - 1;
 	lua_newtable(L);
@@ -318,7 +318,7 @@ bugout:
 			succeeded ? CHILD_SUCCESS : CHILD_FAILURE,
 			lua_tostring(L, -1), lua_objlen(L, -1));
     }
-	
+
     task->nonce = 0;
     if (send_ctl_msg(THREAD_EXITS, "", 0))
 	errx(1, "Can't send task exit message.");
@@ -370,7 +370,7 @@ static int create_task(uint8_t *taskdescr, int size,
     }
     task = &tasks[freetask];
     task->control_flags = 0;
-    
+
     // Set task name if given one.
     lua_getfield(newstate, -1, "taskname");
     if (lua_isnil(newstate, -1)) {
@@ -428,7 +428,7 @@ static int create_task(uint8_t *taskdescr, int size,
 	lua_pushinteger(L, freetask);
 	lua_rawset(L, 1);
     }
-    
+
     return freetask;
 bugout:
     puts(lua_tostring(newstate, -1));
@@ -462,7 +462,7 @@ static void *housekeeper(void *dummy)
     int task_count = 0;
     int finished = 0;
     int straggler_delay = 2;
-    
+
     if ((L = luaL_newstate()) == NULL)
 	err(1, housekeeper_name);
 
@@ -628,7 +628,7 @@ static int initialize(lua_State *L,
     sigaction(SIGUSR1, &action, NULL);
     action.sa_handler = sigusr2_handler;
     sigaction(SIGUSR2, &action, NULL);
-    
+
     if (task_limit > MAX_TASKS) task_limit = MAX_TASKS;
     num_tasks = task_limit < MIN_TASKS ? MIN_TASKS : task_limit;
     tasks = calloc(num_tasks, sizeof(struct task));
@@ -647,8 +647,9 @@ static int initialize(lua_State *L,
     tasks->name = maintask_name;
     tasks->nonce = 1;
     tasks->queue_in_use = 1;
+    tasks->name_in_use = 1;
     sem_init(&tasks->housekeeper_pending, 0, 0);
-    
+
     return pthread_create(&housekeeper_thread, NULL, &housekeeper, NULL);
 }
 
@@ -668,7 +669,7 @@ LUAFN(initialize)
 	main_incoming_channel_size = lua_tonumber(L, -1);
 	lua_settop(L, 0);
     }
-    
+
     lua_pushboolean(L, initialize(L,
 				  task_limit,
 				  control_channel_size,
@@ -734,7 +735,7 @@ int validate_task(lua_State *L, int ix)
 	    return -1;
     } else
 	task_ix = lookup_task(L, luaL_checkstring(L, ix));
-    return task_ix; 
+    return task_ix;
 }
 
 LUAFN(lookup_task)
@@ -787,7 +788,7 @@ LUAFN(interrupt_task)
     int signo = 0;
     if (!lua_isnil(L, 1))
 	signo = lua_toboolean(L, 1) ? 12 : 10;
-	
+
     int task_ix = validate_task(L, 2);
     if (task_ix < 1)
 	return 0;
@@ -808,7 +809,7 @@ static int getmsg(lua_State *L)
 {
     struct task *task = &tasks[my_index];
     struct message *msg;
-	
+
     if (cb_occupied(&task->incoming_queue) == 0)
 	return 0;
     msg = (void *)(cb_head(&task->incoming_queue) + task->incoming_store);
@@ -1070,7 +1071,7 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     lua_setfield(L, -2, "other");
     lua_setfield(L, -2, "sched");
 
-    
+
     lua_getglobal(L, "string");
     lua_getfield(L, -1, "dump");
     lua_pushcclosure(L, LUAFN_NAME(create_task), 1);
@@ -1088,6 +1089,6 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     lua_setfield(L, -3, "waitmsg");
     lua_pushcclosure(L, LUAFN_NAME(from_now), 1);
     lua_setfield(L, -2, "from_now");
-    
+
     return 1;
 }
