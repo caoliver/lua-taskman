@@ -230,14 +230,12 @@ static void *new_thread(void *luastate)
     lua_pop(L, 1);
 
     // Set error printing as asked.
-    lua_pushstring(L, "show_errors");
-    lua_rawget(L, -2);
+    lua_getfield(L, -1, "show_errors");
     show_errors = lua_toboolean(L, -1);
     lua_pop(L, 1);
 
     // Fetch the program.
-    lua_pushstring(L, "program");
-    lua_rawget(L, -2);
+    lua_getfield(L, -1, "program");
     int rc = 0;
     if (lua_type(L, -1) == LUA_TSTRING &&
 	lua_objlen(L, -1) > 1) {
@@ -365,25 +363,23 @@ static int create_task(uint8_t *taskdescr, int size,
     task->control_flags = 0;
     
     //  Create incoming message queue.
-    lua_pushstring(newstate, "queuesize");
-    lua_rawget(newstate, -2);
-    int queuesize = lua_tointeger(newstate, -1);
+    lua_getfield(newstate, -1, "queue_size");
+    int queue_size = lua_tointeger(newstate, -1);
     if (!lua_isnil(newstate, -1) && !lua_isnumber(newstate, -1)) {
 	lua_pushstring(newstate, "Bad queue size");
 	goto bugout;
     }
     lua_pop(newstate, 1);
-    if (queuesize < MIN_CLIENT_BUFFER_SIZE)
-	queuesize = MIN_CLIENT_BUFFER_SIZE;
-    size_t qsiz = queuesize;
-    task->incoming_store = allocate_twinmap(&qsiz);
-    cb_init(&task->incoming_queue, qsiz);
+    if (queue_size < MIN_CLIENT_BUFFER_SIZE)
+	queue_size = MIN_CLIENT_BUFFER_SIZE;
+    size_t qsize = queue_size;
+    task->incoming_store = allocate_twinmap(&qsize);
+    cb_init(&task->incoming_queue, qsize);
     sem_init(&task->incoming_sem, 0, 0);
     pthread_mutex_init(&task->incoming_mutex, NULL);
     
     // Set task name if given one.
-    lua_pushstring(newstate, "taskname");
-    lua_rawget(newstate, -2);
+    lua_getfield(newstate, -1, "taskname");
     if (lua_isnil(newstate, -1)) {
 	task->name = NULL;
     } else {
@@ -392,12 +388,11 @@ static int create_task(uint8_t *taskdescr, int size,
 	    goto bugout;
 	}
 	const char *namestr = lua_tostring(newstate,-1);
-	lua_pushstring(L, namestr);
-	lua_rawget(L, 1);
+	lua_getfield(L, 1, namestr);
 	bool unused = lua_isnil(L, -1);
 	lua_settop(L, 2);
 	if (!unused) {
-	    lua_pushstring(newstate, "Task name in use");
+	    lua_pushfstring(newstate, "Task name %s in use", namestr);
 	    goto bugout;
 	}
 	task->name = strdup(namestr);
