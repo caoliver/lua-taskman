@@ -103,6 +103,7 @@ struct task {
     uint16_t parent_index;
     uint16_t parent_nonce;
     uint32_t control_flags;
+    uint32_t queue_in_use;
     struct circbuf incoming_queue;
     uint8_t *incoming_store;
     pthread_t thread;
@@ -111,6 +112,7 @@ struct task {
     pthread_mutex_t incoming_mutex;
     int query_index;
     int query_extra;
+    uint32_t name_in_use;
     char *name;
 };
 
@@ -185,9 +187,8 @@ int send_client_msg(struct task *task,
 {
     uint32_t msgsize = ALIGN(sizeof(struct message) + size);
     bool success = false;
-    uint8_t *store =  task->incoming_store;
     pthread_mutex_lock(&task->incoming_mutex);
-    if (store == task->incoming_store &&
+    if (__atomic_add_fetch(&task->queue_in_use, 1, __ATOMIC_SEQ_CST) == 2 &&
 	cb_available(&task->incoming_queue) >= msgsize) {
 	struct message *msg =
 	    (void *)(cb_tail(&task->incoming_queue) + task->incoming_store);
@@ -198,6 +199,10 @@ int send_client_msg(struct task *task,
 	memcpy(msg->payload, payload, size);
 	cb_produce(&task->incoming_queue, msgsize);
 	success = true;
+    }
+    if (__atomic_sub_fetch(&task->queue_in_use, 1, __ATOMIC_SEQ_CST) == 0) {
+	free_twinmap(task->incoming_store, task->incoming_queue.size);
+	tasks->incoming_store = 0;
     }
     pthread_mutex_unlock(&task->incoming_mutex);
     if (!success) return -1;
@@ -229,6 +234,10 @@ static void *new_thread(void *luastate)
     struct task *task = &tasks[my_index];
     lua_pop(L, 1);
 
+    // These aren't GCable.
+    __atomic_add_fetch(&task->queue_in_use, 1, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&task->name_in_use, 1, __ATOMIC_SEQ_CST);
+	
     // Set error printing as asked.
     lua_getfield(L, -1, "show_errors");
     show_errors = lua_toboolean(L, -1);
@@ -250,8 +259,7 @@ static void *new_thread(void *luastate)
     if (!lua_isfunction(L, -1)) {
 	if (rc == 0)
 	    lua_pushfstring(L, "Invalid program type: %s",
-			    lua_typename(L,
-					 lua_type(L, -1)));
+			    lua_typename(L, lua_type(L, -1)));
 	goto bugout;
     }
 
@@ -305,10 +313,11 @@ bugout:
 	    fprintf(stderr, "Child %d,%d failed: %s\n",
 		    my_index, task->nonce, lua_tostring(L, -1));
     if (tasks[task->parent_index].nonce == task->parent_nonce &&
-	tasks[task->parent_index].control_flags & ANNOUNCE_CHLD)
+	tasks[task->parent_index].control_flags & ANNOUNCE_CHLD) {
 	send_client_msg(&tasks[task->parent_index],
 			succeeded ? CHILD_SUCCESS : CHILD_FAILURE,
 			lua_tostring(L, -1), lua_objlen(L, -1));
+    }
 	
     task->nonce = 0;
     if (send_ctl_msg(THREAD_EXITS, "", 0))
@@ -362,22 +371,6 @@ static int create_task(uint8_t *taskdescr, int size,
     task = &tasks[freetask];
     task->control_flags = 0;
     
-    //  Create incoming message queue.
-    lua_getfield(newstate, -1, "queue_size");
-    int queue_size = lua_tointeger(newstate, -1);
-    if (!lua_isnil(newstate, -1) && !lua_isnumber(newstate, -1)) {
-	lua_pushstring(newstate, "Bad queue size");
-	goto bugout;
-    }
-    lua_pop(newstate, 1);
-    if (queue_size < MIN_CLIENT_BUFFER_SIZE)
-	queue_size = MIN_CLIENT_BUFFER_SIZE;
-    size_t qsize = queue_size;
-    task->incoming_store = allocate_twinmap(&qsize);
-    cb_init(&task->incoming_queue, qsize);
-    sem_init(&task->incoming_sem, 0, 0);
-    pthread_mutex_init(&task->incoming_mutex, NULL);
-    
     // Set task name if given one.
     lua_getfield(newstate, -1, "taskname");
     if (lua_isnil(newstate, -1)) {
@@ -398,6 +391,24 @@ static int create_task(uint8_t *taskdescr, int size,
 	task->name = strdup(namestr);
     }
     lua_pop(newstate, 1);
+
+    //  Create incoming message queue.
+    lua_getfield(newstate, -1, "queue_size");
+    int queue_size = lua_tointeger(newstate, -1);
+    if (!lua_isnil(newstate, -1) && !lua_isnumber(newstate, -1)) {
+	lua_pushstring(newstate, "Bad queue size");
+	goto bugout;
+    }
+    lua_pop(newstate, 1);
+
+    if (queue_size < MIN_CLIENT_BUFFER_SIZE)
+	queue_size = MIN_CLIENT_BUFFER_SIZE;
+    size_t qsize = queue_size;
+    task->incoming_store = allocate_twinmap(&qsize);
+    cb_init(&task->incoming_queue, qsize);
+    sem_init(&task->incoming_sem, 0, 0);
+    pthread_mutex_init(&task->incoming_mutex, NULL);
+
     task->parent_index = sender;
     // Is this valid.
     task->parent_nonce = sender_nonce;
@@ -420,10 +431,13 @@ static int create_task(uint8_t *taskdescr, int size,
     
     return freetask;
 bugout:
-
     puts(lua_tostring(newstate, -1));
-    if (task && task->incoming_store)
-	free_twinmap(task->incoming_store, task->incoming_queue.size);
+    if (task) {
+	if (task->incoming_store)
+	    free_twinmap(task->incoming_store, task->incoming_queue.size);
+	if (task->name)
+	    free(task->name);
+    }
     lua_close(newstate);
     return -1;
 }
@@ -546,19 +560,20 @@ static void *housekeeper(void *dummy)
 	    finished++;
 	    if (--task_count <= 0 && shutdown)
 		goto fini;
-	    if (tasks[sender].name) {
-		lua_pushstring(L, tasks[sender].name);
+	    if (__atomic_sub_fetch(&tasks[sender].name_in_use, 1,
+				       __ATOMIC_SEQ_CST) == 0 &&
+		tasks[sender].name) {
 		lua_pushnil(L);
-		lua_rawset(L, 1);
+		lua_setfield(L, 1, tasks[sender].name);
 		free(tasks[sender].name);
+		tasks[sender].name = NULL;
 	    }
-	    if (tasks[sender].incoming_store) {
-		// Lock to prevent use after free
-		pthread_mutex_lock(&tasks[sender].incoming_mutex);
+	    // Toss message queue store if GCable.
+	    if (__atomic_sub_fetch(&tasks[sender].queue_in_use, 1,
+				   __ATOMIC_SEQ_CST) == 0) {
 		free_twinmap(tasks[sender].incoming_store,
 			     tasks[sender].incoming_queue.size);
 		tasks[sender].incoming_store = 0;
-		pthread_mutex_unlock(&tasks[sender].incoming_mutex);
 	    }
 	    break;
 	case REQUEST_SHUTDOWN:
@@ -631,6 +646,7 @@ static int initialize(lua_State *L,
     tasks->thread = pthread_self();
     tasks->name = maintask_name;
     tasks->nonce = 1;
+    tasks->queue_in_use = 1;
     sem_init(&tasks->housekeeper_pending, 0, 0);
     
     return pthread_create(&housekeeper_thread, NULL, &housekeeper, NULL);
@@ -728,7 +744,8 @@ LUAFN(lookup_task)
     if (task_ix < 0)
 	return 0;
     lua_pushinteger(L, task_ix);
-    return 1;
+    lua_pushinteger(L, tasks[task_ix].nonce);
+    return 2;
 }
 
 LUAFN(shutdown)
@@ -805,15 +822,22 @@ static int getmsg(lua_State *L)
     lua_pushlstring(L, (char *)msg->payload, size);
     lua_pushinteger(L, msg->type);
     cb_release(&task->incoming_queue, ALIGN(sizeof(struct message)+size));
-    if (sender_task->name) {
+    int retcnt = 4;
+    if (__atomic_add_fetch(&sender_task->name_in_use, 1,
+			   __ATOMIC_SEQ_CST) == 2 &&
+	sender_task->name) {
 	lua_pushstring(L, sender_task->name);
-	lua_pushinteger(L, sender);
-	lua_pushinteger(L, sender_task->nonce);
-	return 5;
+	retcnt++;
+    }
+    if (__atomic_sub_fetch(&sender_task->name_in_use, 1,
+			   __ATOMIC_SEQ_CST) == 0 &&
+	sender_task->name) {
+	free(task->name);
+	task->name = NULL;
     }
     lua_pushinteger(L, sender);
     lua_pushinteger(L, sender_task->nonce);
-    return 4;
+    return retcnt;
 }
 
 LUAFN(getmsg)
