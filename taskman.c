@@ -276,7 +276,8 @@ static void *new_thread(void *luastate)
 
     if (tasks[my_index].name) {
 	for (int i=0; i < num_tasks; i++)
-	    if (tasks[i].control_flags & ANNOUNCE_NNTASK)
+	    if (tasks[i].nonce != 0 &&
+		tasks[i].control_flags & ANNOUNCE_NNTASK)
 		send_client_msg(&tasks[i], TASK_BIRTH_ANNOUNCE, "", 0);
     }
     
