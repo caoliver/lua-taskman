@@ -54,14 +54,17 @@ void show_stack(lua_State *L)
 #define CHILD_FAILURE 65538
 
 #define BROADCAST_SHIFT 8
-#define QUIT_FLAG 1
 
 #define SUBSCRIBE_SHIFT 16
 char *announcements[] = {
-#define ANNOUNCE_CHLD (1<<SUBSCRIBE_SHIFT)
-    "child_dies",
-#define ANNOUNCE_NNTASK (2<<SUBSCRIBE_SHIFT)
+#define ANNOUNCE_CHILD_EXITS (1<<SUBSCRIBE_SHIFT)
+    "child_task_exits",
+#define ANNOUNCE_ALL_TASK_EXITS (2<<SUBSCRIBE_SHIFT)
+    "any_task_exits",
+#define ANNOUNCE_NEW_NAMED_TASKS (4<<SUBSCRIBE_SHIFT)
     "new_named_task",
+#define ANNOUNCE_ANY_NEW_TASKS (8<<SUBSCRIBE_SHIFT)
+    "any_new_task",
     NULL};
 
 
@@ -226,6 +229,7 @@ static void *new_thread(void *luastate)
     sem_post(&task_running_sem);
     bool succeeded = false;
     bool show_errors;
+    bool show_exits;
     L = luastate;
     // Stack:
     //   3 - my index
@@ -239,9 +243,12 @@ static void *new_thread(void *luastate)
     __atomic_add_fetch(&task->queue_in_use, 1, __ATOMIC_SEQ_CST);
     __atomic_add_fetch(&task->name_in_use, 1, __ATOMIC_SEQ_CST);
 
-    // Set error printing as asked.
+    // Set exit status printing as asked.
     lua_getfield(L, -1, "show_errors");
     show_errors = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, -1, "show_exits");
+    show_exits = lua_toboolean(L, -1);
     lua_pop(L, 1);
 
     // Fetch the program.
@@ -281,12 +288,12 @@ static void *new_thread(void *luastate)
 	task->last_active_nonce = 1;
     task->nonce = task->last_active_nonce;
 
-    if (tasks[my_index].name) {
-	for (int i=0; i < num_tasks; i++)
-	    if (tasks[i].nonce != 0 &&
-		tasks[i].control_flags & ANNOUNCE_NNTASK)
-		send_client_msg(&tasks[i], TASK_BIRTH_ANNOUNCE, "", 0);
-    }
+    for (int i=0; i < num_tasks; i++)
+	if (tasks[i].nonce != 0 &&
+	    (tasks[i].control_flags & ANNOUNCE_NEW_NAMED_TASKS &&
+	     tasks[my_index].name ||
+	     tasks[i].control_flags & ANNOUNCE_ANY_NEW_TASKS))
+	    send_client_msg(&tasks[i], TASK_BIRTH_ANNOUNCE, "", 0);
 
     if (!lua_pcall(L, arg_count, LUA_MULTRET, 1)) {
 	int retvals = lua_gettop(L) - 1;
@@ -306,20 +313,30 @@ static void *new_thread(void *luastate)
     }
 
 bugout:
-    if (!succeeded && show_errors)
+    if (succeeded && show_exits)
+	if (task->name)
+	    fprintf(stderr, "Child %s exits.\n", task->name);
+	else
+	    fprintf(stderr, "Child %d,%d exits.\n", my_index, task->nonce);
+
+    if (!succeeded && (show_errors || show_exits))
 	if (task->name)
 	    fprintf(stderr, "Child %s failed: %s\n",
 		    task->name, lua_tostring(L, -1));
 	else
 	    fprintf(stderr, "Child %d,%d failed: %s\n",
 		    my_index, task->nonce, lua_tostring(L, -1));
-    if (tasks[task->parent_index].nonce == task->parent_nonce &&
-	tasks[task->parent_index].control_flags & ANNOUNCE_CHLD) {
-	send_client_msg(&tasks[task->parent_index],
-			succeeded ? CHILD_SUCCESS : CHILD_FAILURE,
-			lua_tostring(L, -1), lua_objlen(L, -1));
-    }
 
+    for (int i=0; i < num_tasks; i++)
+	if (tasks[i].nonce != 0 &&
+	    (i==task->parent_index && tasks[i].nonce == task->parent_nonce &&
+	     tasks[i].control_flags & ANNOUNCE_CHILD_EXITS ||
+	     tasks[i].control_flags & ANNOUNCE_ALL_TASK_EXITS))
+		send_client_msg(&tasks[i],
+				succeeded ? CHILD_SUCCESS : CHILD_FAILURE,
+				lua_tostring(L, -1), lua_objlen(L, -1));
+
+    tasks[my_index].nonce = 0;
     if (send_ctl_msg(THREAD_EXITS, "", 0))
 	errx(1, "Can't send task exit message.");
     lua_close(L);
@@ -341,7 +358,10 @@ static int create_task(uint8_t *taskdescr, int size,
     for (int i = 1; i < num_tasks; i++) {
 	if (++next_task_allocated == num_tasks)
 	    next_task_allocated = 1;
-	if (tasks[next_task_allocated].nonce == 0) {
+	// Previously used task is available if child has cleared
+	// the nonce, and housekeeper has freed the queue storage.
+	if (tasks[next_task_allocated].nonce == 0 &&
+	    tasks[next_task_allocated].incoming_store == 0) {
 	    freetask = next_task_allocated;
 	    break;
 	}
@@ -400,7 +420,6 @@ static int create_task(uint8_t *taskdescr, int size,
 	goto bugout;
     }
     lua_pop(newstate, 1);
-
     if (queue_size < MIN_CLIENT_BUFFER_SIZE)
 	queue_size = MIN_CLIENT_BUFFER_SIZE;
     size_t qsize = queue_size;
@@ -410,7 +429,7 @@ static int create_task(uint8_t *taskdescr, int size,
     pthread_mutex_init(&task->incoming_mutex, NULL);
 
     task->parent_index = sender;
-    // Is this valid.
+    // Is this still valid.  What if this becomes zero?
     task->parent_nonce = sender_nonce;
     // Requestor waits on this for replies from housekeeper.
     sem_init(&task->housekeeper_pending, 0, 0);
@@ -552,7 +571,6 @@ static void *housekeeper(void *dummy)
 	}
 	    break;
 	case THREAD_EXITS:
-
 	    cb_release(&control_channel_buf,
 		       ALIGN(sizeof(struct message)+size));
 	    tasks[sender].control_flags=0;
@@ -576,7 +594,6 @@ static void *housekeeper(void *dummy)
 			     tasks[sender].incoming_queue.size);
 		tasks[sender].incoming_store = 0;
 	    }
-	    tasks[sender].nonce = 0;
 	    break;
 	case REQUEST_SHUTDOWN:
 	    cb_release(&control_channel_buf,
@@ -773,14 +790,46 @@ LUAFN(status)
     return 0;
 }
 
-LUAFN(request_quit)
+static char *badflag = "Invalid flag %d";
+
+LUAFN(change_flag)
 {
     ASSURE_INITIALIZED;
-    int task_ix = validate_task(L, 1);
-    if (task_ix < 1)
+    int flag = luaL_checkinteger(L, 1);
+    if (flag < 0 || flag > 7)
+	luaL_error(L, badflag, flag);
+    int task_ix = validate_task(L, 3);
+    if (task_ix < 0)
 	return 0;
-    tasks[task_ix].control_flags |= QUIT_FLAG;
+     tasks[task_ix].control_flags = (tasks[task_ix].control_flags &
+				     ~(1<<flag) |
+				     lua_toboolean(L, 2)<<flag);
     lua_pushinteger(L, task_ix);
+    return 1;
+}
+
+LUAFN(broadcast_flag)
+{
+    ASSURE_INITIALIZED;
+    int flag = luaL_checkinteger(L, 1);
+    if (flag < 0 || flag > 7)
+	luaL_error(L, badflag, flag);
+    for (int i = 0; i < num_tasks; i++)
+	if (tasks[i].nonce != 0)
+	    tasks[i].control_flags = (tasks[i].control_flags &
+				      ~(1<<flag) |
+				      lua_toboolean(L, 2)<<flag);
+
+    return 0;
+}
+
+LUAFN(examine_flag)
+{
+    ASSURE_INITIALIZED;
+    int flag = luaL_checkinteger(L, 1);
+    if (flag < 0 || flag > 7)
+	luaL_error(L, badflag, flag);
+    lua_pushboolean(L, tasks[my_index].control_flags & 1<<flag);
     return 1;
 }
 
@@ -794,16 +843,8 @@ LUAFN(interrupt_task)
     int task_ix = validate_task(L, 2);
     if (task_ix < 1)
 	return 0;
-    tasks[task_ix].control_flags |= QUIT_FLAG;
     pthread_kill(tasks[task_ix].thread, signo);
     lua_pushinteger(L, task_ix);
-    return 1;
-}
-
-LUAFN(quit_requested)
-{
-    ASSURE_INITIALIZED;
-    lua_pushboolean(L, tasks[my_index].control_flags & QUIT_FLAG);
     return 1;
 }
 
@@ -1036,9 +1077,10 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     const luaL_Reg funcptrs[] = {
 	FN_ENTRY(initialize),
 	FN_ENTRY(lookup_task),
-	FN_ENTRY(request_quit),
+	FN_ENTRY(change_flag),
+	FN_ENTRY(broadcast_flag),
 	FN_ENTRY(interrupt_task),
-	FN_ENTRY(quit_requested),
+	FN_ENTRY(examine_flag),
 	FN_ENTRY(shutdown),
 	FN_ENTRY(sendmsg),
 	FN_ENTRY(sendtypemsg),
