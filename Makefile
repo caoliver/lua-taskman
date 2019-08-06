@@ -1,6 +1,8 @@
 CFLAGS+=-fPIC -I /usr/local/include/luajit-2.0 -I/usr/local/include
-CFLAGS+=-Wall -Wno-parentheses -O2 -mtune=generic -fomit-frame-pointer -std=c99
+CFLAGS+=-Wall -Wno-parentheses -fomit-frame-pointer -std=c99 -O2
 CFLAGS+=-D_POSIX_C_SOURCE=200112L
+CFLAGS+=-mtune=generic
+#CFLAGS+=-march=native -mfloat-abi=hard
 LDFLAGS+=-lluajit -ldl -pthread -lm
 
 all: taskman.so
