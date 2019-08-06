@@ -2,8 +2,11 @@ local b='very'
 
 local function f() print 'hello, there' end
 
+local t=require'taskman'
+t.set_subscriptions {all_task_exits=true}
+
 -- Launch thread which...
-require 'taskman'.create_task{
+t.create_task{
    program=function (fn)
       -- Launches a second thread that takes...
       require 'taskman'.create_task{program=fn,'hairy'}
@@ -15,8 +18,9 @@ require 'taskman'.create_task{
    end
 }
 
--- Thread cleanup on main exit not finished yet, so...
-os.execute 'sleep 1'
+t.waitmsg()
+t.waitmsg()
+t.shutdown()
 
 --[[
 

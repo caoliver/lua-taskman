@@ -1,5 +1,3 @@
-local t=require 'taskman'
-
 local volume=2^32
 local msg_size = 2^10
 local msg_count = volume/msg_size
@@ -29,17 +27,17 @@ local function writer()
                                                  100*drops/msg_count)
 end
 
-t.set_subscriptions {child_dies=true}
+local t=require 'taskman'
+local f=require 'freezer'
+
+t.set_subscriptions {child_task_exits=true}
 
 t.create_task{program=reader, taskname='reader'}
 t.create_task{program=writer}
 
 local m1, _, s1 = t.waitmsg()
 local m2, _, s2 = t.waitmsg()
-
 if (s1 == 'reader') then m1,m2=m2,m1 end
-
-local f=require 'freezer'
 
 io.write(f.thaw(m1)[1], '\n', f.thaw(m2)[1], '\n')
 
