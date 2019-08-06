@@ -3,7 +3,7 @@ local b='very'
 local function f() print 'hello, there' end
 
 local t=require'taskman'
-t.set_subscriptions {all_task_exits=true}
+t.set_subscriptions {any_task_exits=true}
 
 -- Launch thread which...
 t.create_task{
