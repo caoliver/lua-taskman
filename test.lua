@@ -18,8 +18,8 @@ t.create_task{
    end
 }
 
-t.waitmsg()
-t.waitmsg()
+t.wait_message()
+t.wait_message()
 t.shutdown()
 
 --[[

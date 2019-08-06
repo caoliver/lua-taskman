@@ -49,13 +49,16 @@ void show_stack(lua_State *L)
 
 // Client message types
 #define NORMAL_CLIENT_MSG 0
-#define TASK_BIRTH_ANNOUNCE 65536
-#define CHILD_SUCCESS 65537
-#define CHILD_FAILURE 65538
+#define TASK_BIRTH_ANNOUNCE 4096
+#define CHILD_SUCCESS 4097
+#define CHILD_FAILURE 4098
 
-#define BROADCAST_SHIFT 8
+#define MAX_FLAG 11
+#define MAX_MSG_TYPE 4095
+#define BROADCAST_SHIFT 12
+#define CHANNEL_COUNT 12
 
-#define SUBSCRIBE_SHIFT 16
+#define SUBSCRIBE_SHIFT 24
 char *announcements[] = {
 #define ANNOUNCE_CHILD_EXITS (1<<SUBSCRIBE_SHIFT)
     "child_task_exits",
@@ -133,8 +136,8 @@ static sem_t control_channel_sem;
 static pthread_mutex_t control_channel_mutex;
 
 struct message {
-    uint32_t type;
     uint32_t size;
+    uint16_t type;
     uint16_t sender;
     uint16_t nonce;
     uint8_t payload[0];
@@ -392,7 +395,7 @@ static int create_task(uint8_t *taskdescr, int size,
     task->control_flags = 0;
 
     // Set task name if given one.
-    lua_getfield(newstate, -1, "taskname");
+    lua_getfield(newstate, -1, "task_name");
     if (lua_isnil(newstate, -1)) {
 	task->name = NULL;
     } else {
@@ -796,7 +799,7 @@ LUAFN(change_flag)
 {
     ASSURE_INITIALIZED;
     int flag = luaL_checkinteger(L, 1);
-    if (flag < 0 || flag > 7)
+    if (flag < 0 || flag >= MAX_FLAG)
 	luaL_error(L, badflag, flag);
     int task_ix = validate_task(L, 3);
     if (task_ix < 0)
@@ -812,7 +815,7 @@ LUAFN(broadcast_flag)
 {
     ASSURE_INITIALIZED;
     int flag = luaL_checkinteger(L, 1);
-    if (flag < 0 || flag > 7)
+    if (flag < 0 || flag > MAX_FLAG)
 	luaL_error(L, badflag, flag);
     for (int i = 0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0)
@@ -823,11 +826,11 @@ LUAFN(broadcast_flag)
     return 0;
 }
 
-LUAFN(examine_flag)
+LUAFN(flag_is_true)
 {
     ASSURE_INITIALIZED;
     int flag = luaL_checkinteger(L, 1);
-    if (flag < 0 || flag > 7)
+    if (flag < 0 || flag > MAX_FLAG)
 	luaL_error(L, badflag, flag);
     lua_pushboolean(L, tasks[my_index].control_flags & 1<<flag);
     return 1;
@@ -884,7 +887,7 @@ static int getmsg(lua_State *L)
     return retcnt;
 }
 
-LUAFN(getmsg)
+LUAFN(get_message)
 {
     ASSURE_INITIALIZED;
     int rc = getmsg(L);
@@ -899,7 +902,7 @@ LUAFN(timestamp_name)
     return 1;
 }
 
-LUAFN(from_now)
+LUAFN(time_from_now)
 {
     double interval = lua_tonumber(L, 1);
     if (interval < 0)
@@ -916,14 +919,14 @@ LUAFN(from_now)
     return 1;
 }
 
-LUAFN(waitmsg)
+LUAFN(wait_message)
 {
     ASSURE_INITIALIZED;
     if (lua_isnone(L, 1))
 	sem_wait(&tasks[my_index].incoming_sem);
     else {
 	if (lua_isnumber(L, 1))
-	    CALL_LUAFN(from_now);
+	    CALL_LUAFN(time_from_now);
 	if (!lua_getmetatable(L, 1) ||
 	    !lua_rawequal(L, -1, lua_upvalueindex(1)))
 	    luaL_error(L, "Bad time spec");
@@ -936,7 +939,7 @@ LUAFN(waitmsg)
     return rc;
 }
 
-LUAFN(sendmsg)
+LUAFN(send_message)
 {
     ASSURE_INITIALIZED;
     int task_ix = validate_task(L, 2);
@@ -952,15 +955,15 @@ LUAFN(sendmsg)
     return 1;
 }
 
-LUAFN(sendtypemsg)
+LUAFN(send_message_with_type)
 {
     ASSURE_INITIALIZED;
     int task_ix = validate_task(L, 3);
     if (task_ix >= 0) {
 	size_t msglen;
 	const char *msg =lua_tolstring(L, 1, &msglen);
-	int type = lua_tointeger(L, -2);
-	if (type > 255 || type < 0)
+	int type = lua_tointeger(L, 2);
+	if (type > MAX_MSG_TYPE || type < 0)
 	    luaL_error(L, "Bad user message type");
 	if (send_client_msg(&tasks[task_ix], type, msg, msglen) < 0)
 	    // No room, so set error code.
@@ -970,23 +973,23 @@ LUAFN(sendtypemsg)
     return 1;
 }
 
-LUAFN(broadcast)
+LUAFN(broadcast_message)
 {
     ASSURE_INITIALIZED;
     size_t msglen;
     unsigned int send_count = 0;
     const char *msg =lua_tolstring(L, 1, &msglen);
     int type = lua_tointeger(L, 2);
-    if (type > 255 || type < 0)
+    if (type > MAX_MSG_TYPE || type < 0)
 	luaL_error(L, "Bad broadcast message type");
     int channels = lua_tointeger(L, 3);
-    if (channels > 255 || channels < 1)
+    if (channels > (1<<CHANNEL_COUNT) - 1 || channels < 1)
 	luaL_error(L, "Bad broadcast channel selection");
     for (int i = 0; i < num_tasks; i++) {
 	if (i != my_index &&
 	    tasks[i].nonce != 0 &&
 	    tasks[i].control_flags & channels<<BROADCAST_SHIFT)
-	    if (send_client_msg(&tasks[i], type | 0x100, msg, msglen) >=0)
+	    if (send_client_msg(&tasks[i], type | 0x1000 , msg, msglen) >=0)
 		send_count++;
     }
     lua_pushinteger(L, send_count);
@@ -1080,14 +1083,14 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(change_flag),
 	FN_ENTRY(broadcast_flag),
 	FN_ENTRY(interrupt_task),
-	FN_ENTRY(examine_flag),
+	FN_ENTRY(flag_is_true),
 	FN_ENTRY(shutdown),
-	FN_ENTRY(sendmsg),
-	FN_ENTRY(sendtypemsg),
-	FN_ENTRY(broadcast),
+	FN_ENTRY(send_message),
+	FN_ENTRY(send_message_with_type),
+	FN_ENTRY(broadcast_message),
 	FN_ENTRY(set_reception),
 	FN_ENTRY(set_subscriptions),
-	FN_ENTRY(getmsg),
+	FN_ENTRY(get_message),
 	FN_ENTRY(status),
 	FN_ENTRY(set_priority), // Requires special privs.
 	FN_ENTRY(set_affinity),
@@ -1136,10 +1139,10 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     lua_pushcfunction(L, LUAFN_NAME(timestamp_name));
     lua_setfield(L, -2, "__tostring");
     lua_pushvalue(L, -1);
-    lua_pushcclosure(L, LUAFN_NAME(waitmsg), 1);
-    lua_setfield(L, -3, "waitmsg");
-    lua_pushcclosure(L, LUAFN_NAME(from_now), 1);
-    lua_setfield(L, -2, "from_now");
+    lua_pushcclosure(L, LUAFN_NAME(wait_message), 1);
+    lua_setfield(L, -3, "wait_message");
+    lua_pushcclosure(L, LUAFN_NAME(time_from_now), 1);
+    lua_setfield(L, -2, "time_from_now");
 
     return 1;
 }
