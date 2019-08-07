@@ -83,28 +83,6 @@ static char *tasklist_name = "__task_list";
 static char *housekeeper_name = "HouseKeeper";
 static char *maintask_name = ":main:";
 
-static void sigexit(lua_State *L, lua_Debug *ar)
-{
-  (void)ar;  /* unused arg. */
-  lua_sethook(L, NULL, 0, 0);
-  lua_pushstring(L, "interrupted!");
-  lua_error(L);
-}
-
-static void sigusr1_handler(int sig)
-{
-    lua_sethook(L, sigexit, LUA_MASKCALL | LUA_MASKRET | LUA_MASKCOUNT, 1);
-}
-
-// This may (likely) leave the lua state inconsistent.
-// Cleanup may very well crash.
-static void sigusr2_handler(int sig)
-{
-    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-    pthread_cancel(pthread_self());
-}
-
 static sem_t task_running_sem;
 
 struct task {
@@ -126,8 +104,8 @@ struct task {
     lua_State *my_state;
 };
 
-static uint16_t num_tasks;
-static struct task *tasks;
+int num_tasks;
+struct task *tasks;
 
 pthread_t housekeeper_thread;
 
@@ -146,6 +124,31 @@ struct message {
     uint16_t nonce;
     uint8_t payload[0];
 };
+
+extern int freezer_thaw_buffer(lua_State *);
+extern int freezer_freeze(lua_State *L);
+
+static void sigexit(lua_State *L, lua_Debug *ar)
+{
+  (void)ar;  /* unused arg. */
+  lua_sethook(L, NULL, 0, 0);
+  lua_pushstring(L, "interrupted!");
+  lua_error(L);
+}
+
+static void sigusr1_handler(int sig)
+{
+    lua_sethook(L, sigexit, LUA_MASKCALL | LUA_MASKRET | LUA_MASKCOUNT, 1);
+}
+
+// This may (likely) leave the lua state inconsistent.
+// Cleanup may very well crash.
+static void sigusr2_handler(int sig)
+{
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+    pthread_cancel(tasks[my_index].thread);
+}
 
 LUAFN(traceback)
 {
@@ -166,9 +169,6 @@ LUAFN(traceback)
     lua_call(L, 2, 1);  /* call debug.traceback */
     return 1;
 }
-
-extern int freezer_thaw_buffer(lua_State *);
-extern int freezer_freeze(lua_State *L);
 
 int send_ctl_msg(uint32_t command, const char *payload, uint32_t size)
 {
@@ -810,9 +810,12 @@ int validate_task(lua_State *L, int ix)
     int task_ix;
     if (lua_isnumber(L, ix)) {
 	task_ix = luaL_checkinteger(L, ix);
-	if (task_ix < 0 || task_ix >= num_tasks ||
-	    !lua_isnoneornil(L, ix+1) &&
-	    luaL_checkinteger(L, ix+1) != tasks[task_ix].nonce)
+	if (task_ix < 0 || task_ix >= num_tasks)
+	    return -1;
+	if (lua_isnoneornil(L, ix+1)) {
+	    if (tasks[task_ix].nonce == 0)
+		return -1;
+	} else if (luaL_checkinteger(L, ix+1) != tasks[task_ix].nonce)
 	    return -1;
     } else
 	task_ix = lookup_task(L, luaL_checkstring(L, ix));
@@ -908,6 +911,18 @@ LUAFN(interrupt_task)
     return 1;
 }
 
+LUAFN(interrupt_all)
+{
+    TASK_FAIL_IF_UNINITIALISED;
+    int signo = 0;
+    if (!lua_isnil(L, 1))
+	signo = lua_toboolean(L, 1) ? 12 : 10;
+    for (int i = 1; i < num_tasks; i++)
+	if (tasks[i].nonce != 0 && i != my_index)
+	    pthread_kill(tasks[i].thread, signo);
+    return 0;
+}
+
 LUAFN(cancel_task)
 {
     TASK_FAIL_IF_UNINITIALISED;
@@ -916,6 +931,15 @@ LUAFN(cancel_task)
 	pthread_cancel(tasks[task_ix].thread);
     lua_pushinteger(L, task_ix);
     return 1;
+}
+
+LUAFN(cancel_all)
+{
+    TASK_FAIL_IF_UNINITIALISED;
+    for (int i = 1; i < num_tasks; i++)
+	if (tasks[i].nonce != 0 && i != my_index)
+	    pthread_cancel(tasks[i].thread);
+    return 0;
 }
 
 LUAFN(set_cancel)
@@ -1115,26 +1139,16 @@ LUAFN(set_priority)
 {
 #ifdef __linux__
     ASSURE_INITIALIZED;
-    int task_ix;
     struct sched_param param;
 
     param.sched_priority = lua_tointeger(L, 1);
     int policy = SCHED_OTHER;
     if (!lua_isnil(L, 2))
 	policy = lua_tointeger(L, 2);
-    if (lua_isnone(L, 3))
-	task_ix = my_index;
-    else
-	task_ix = validate_task(L, 3);
-    lua_pushinteger(L, task_ix);
-    lua_pushnil(L);
-    if (task_ix >= 0 &&
-	pthread_setschedparam(tasks[task_ix].thread, policy, &param) == 0) {
-	lua_pop(L, 1);
-	lua_pushboolean(L, true);
-    }
-    lua_insert(L, -2);
-    return 2;
+    lua_pushboolean(L,
+		    pthread_setschedparam(tasks[my_index].thread,
+					  policy, &param) == 0);
+    return 1;
 #else
     luaL_error(L, "**NOT IMPLEMENTED**");
 #endif
@@ -1172,7 +1186,9 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(change_flag),
 	FN_ENTRY(broadcast_flag),
 	FN_ENTRY(interrupt_task),
+	FN_ENTRY(interrupt_all),
 	FN_ENTRY(cancel_task),
+	FN_ENTRY(cancel_all),
 	FN_ENTRY(set_cancel),
 	FN_ENTRY(flag_is_true),
 	FN_ENTRY(shutdown),
