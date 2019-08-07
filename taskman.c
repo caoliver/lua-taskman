@@ -49,9 +49,10 @@ void show_stack(lua_State *L)
 
 // Client message types
 #define NORMAL_CLIENT_MSG 0
-#define TASK_BIRTH_ANNOUNCE 4096
-#define CHILD_SUCCESS 4097
-#define CHILD_FAILURE 4098
+#define TASK_CREATE  4096
+#define TASK_EXIT 4097
+#define TASK_FAILURE 4098
+#define TASK_CANCEL   4099
 
 #define MAX_FLAG 11
 #define MAX_MSG_TYPE 4095
@@ -86,7 +87,7 @@ static void sigexit(lua_State *L, lua_Debug *ar)
 {
   (void)ar;  /* unused arg. */
   lua_sethook(L, NULL, 0, 0);
-  lua_pushstring(L, "Soft interrupt");
+  lua_pushstring(L, "interrupted!");
   lua_error(L);
 }
 
@@ -95,11 +96,13 @@ static void sigusr1_handler(int sig)
     lua_sethook(L, sigexit, LUA_MASKCALL | LUA_MASKRET | LUA_MASKCOUNT, 1);
 }
 
-// This crashes VM completely under some circumstances.
+// This may (likely) leave the lua state inconsistent.
+// Cleanup may very well crash.
 static void sigusr2_handler(int sig)
 {
-    lua_pushstring(L, "Hard interrupt");
-    lua_error(L);
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+    pthread_cancel(pthread_self());
 }
 
 static sem_t task_running_sem;
@@ -120,6 +123,7 @@ struct task {
     int query_extra;
     uint32_t name_in_use;
     char *name;
+    lua_State *my_state;
 };
 
 static uint16_t num_tasks;
@@ -227,19 +231,50 @@ static int wait_for_reply(lua_State *L)
     return 2;
 }
 
+// These need to be shared between new_thread and the cancellation handler.
+static __thread bool show_errors;
+static __thread bool show_exits;
+static __thread struct task *task;  // Will be shadowed later on.
+
+void cancellation_handler(void *dummy)
+{
+    static char cancelmsg[] = "cancelled!";
+
+    if (show_exits || show_errors)
+	if (task->name)
+	    fprintf(stderr, "Task %s has been cancelled\n", task->name);
+	else
+	    fprintf(stderr, "Task %d,%d has been cancelled\n",
+		    my_index, task->nonce);
+
+    for (int i=0; i < num_tasks; i++)
+	if (tasks[i].nonce != 0 &&
+	    (i==task->parent_index && tasks[i].nonce == task->parent_nonce &&
+	     tasks[i].control_flags & ANNOUNCE_CHILD_EXITS ||
+	     tasks[i].control_flags & ANNOUNCE_ALL_TASK_EXITS))
+	    send_client_msg(&tasks[i], TASK_CANCEL, cancelmsg,
+			    sizeof(cancelmsg));
+
+    tasks[my_index].nonce = 0;
+    if (send_ctl_msg(THREAD_EXITS, "C", 1))
+	errx(1, "Can't send task exit message.");
+    lua_close(L);    // Possibly crashy.  Leaks otherwise.
+}
+
 static void *new_thread(void *luastate)
 {
-    sem_post(&task_running_sem);
+    // Race?
+    int previous_cancel;
     bool succeeded = false;
-    bool show_errors;
-    bool show_exits;
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &previous_cancel);
+    sem_post(&task_running_sem);
     L = luastate;
     // Stack:
     //   3 - my index
     //   2 - program description table
     //   1 - Traceback function
     my_index = lua_tointeger(L, -1);
-    struct task *task = &tasks[my_index];
+    task = &tasks[my_index];
     lua_pop(L, 1);
 
     // These aren't GCable.
@@ -296,9 +331,18 @@ static void *new_thread(void *luastate)
 	    (tasks[i].control_flags & ANNOUNCE_NEW_NAMED_TASKS &&
 	     tasks[my_index].name ||
 	     tasks[i].control_flags & ANNOUNCE_ANY_NEW_TASKS))
-	    send_client_msg(&tasks[i], TASK_BIRTH_ANNOUNCE, "", 0);
+	    send_client_msg(&tasks[i], TASK_CREATE, "", 0);
 
-    if (!lua_pcall(L, arg_count, LUA_MULTRET, 1)) {
+    int pcall_succeeds = 0;
+    pthread_cleanup_push(cancellation_handler, NULL);
+    pthread_setcancelstate(previous_cancel, NULL);
+    pcall_succeeds = lua_pcall(L, arg_count, LUA_MULTRET, 1);
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+    pthread_cleanup_pop(0);
+
+    // Call user program
+    if (!pcall_succeeds) {
+	// Pack up return values
 	int retvals = lua_gettop(L) - 1;
 	lua_newtable(L);
 	lua_insert(L, 2);
@@ -310,24 +354,23 @@ static void *new_thread(void *luastate)
 	lua_pushcclosure(L, freezer_freeze, 1);
 	lua_insert(L, 2);
 	lua_pop(L, 1);
-	if (!lua_pcall(L, 1, 1, 1)) {
-	    succeeded = true;
-	}
+	// Serialization might fail, so that's still a loss to us.
+	succeeded = !lua_pcall(L, 1, 1, 1);
     }
 
 bugout:
     if (succeeded && show_exits)
 	if (task->name)
-	    fprintf(stderr, "Child %s exits.\n", task->name);
+	    fprintf(stderr, "Task %s exits.\n", task->name);
 	else
-	    fprintf(stderr, "Child %d,%d exits.\n", my_index, task->nonce);
+	    fprintf(stderr, "Task %d,%d exits.\n", my_index, task->nonce);
 
     if (!succeeded && (show_errors || show_exits))
 	if (task->name)
-	    fprintf(stderr, "Child %s failed: %s\n",
+	    fprintf(stderr, "Task %s failed: %s\n",
 		    task->name, lua_tostring(L, -1));
 	else
-	    fprintf(stderr, "Child %d,%d failed: %s\n",
+	    fprintf(stderr, "Task %d,%d failed: %s\n",
 		    my_index, task->nonce, lua_tostring(L, -1));
 
     for (int i=0; i < num_tasks; i++)
@@ -336,11 +379,11 @@ bugout:
 	     tasks[i].control_flags & ANNOUNCE_CHILD_EXITS ||
 	     tasks[i].control_flags & ANNOUNCE_ALL_TASK_EXITS))
 		send_client_msg(&tasks[i],
-				succeeded ? CHILD_SUCCESS : CHILD_FAILURE,
+				succeeded ? TASK_EXIT : TASK_FAILURE,
 				lua_tostring(L, -1), lua_objlen(L, -1));
 
     tasks[my_index].nonce = 0;
-    if (send_ctl_msg(THREAD_EXITS, "", 0))
+    if (send_ctl_msg(THREAD_EXITS, succeeded ? "S" : "F", 1))
 	errx(1, "Can't send task exit message.");
     lua_close(L);
     return NULL;
@@ -392,6 +435,8 @@ static int create_task(uint8_t *taskdescr, int size,
 	goto bugout;
     }
     task = &tasks[freetask];
+    // pthread_cancel needs this for cleanup.
+    task->my_state = newstate;
     task->control_flags = 0;
 
     // Set task name if given one.
@@ -482,7 +527,7 @@ static void *housekeeper(void *dummy)
 {
     struct message *msg;
     int task_count = 0;
-    int finished = 0;
+    int finished = 0, failed = 0, cancelled = 0;
     int straggler_delay = 2;
 
     if ((L = luaL_newstate()) == NULL)
@@ -556,29 +601,40 @@ static void *housekeeper(void *dummy)
 	    break;
 	}
 	case SHOW_STATUS: {
-	    unsigned int anon = 0;
+	    bool show_anon = msg->payload[0];
 	    cb_release(&control_channel_buf,
 		       ALIGN(sizeof(struct message)+size));
-	    printf("Running: %d / Finished: %d\n\n", task_count+1, finished);
+	    printf("\nRunning: %d / Finished: %d / "
+		   "Failed: %d / Cancelled: %d\n\n",
+		   task_count+1, finished, failed, cancelled);
+	    int anon = 0;
 	    for (int i = 0; i < num_tasks; i++) {
 	    	if (tasks[i].nonce != 0) {
 		    if (tasks[i].name)
-			printf("    %s\n", tasks[i].name);
+			fprintf(stderr, "     %d, %s\n", i, tasks[i].name);
+		    else if (show_anon)
+			fprintf(stderr, "   * %d, %d \n", i, tasks[i].nonce);
 		    else
 			anon++;
 	    	}
 	    }
 	    if (anon > 0)
-		printf("+ %d anonymous\n", anon);
-	    fflush(stdout);
+		fprintf(stderr, "   + %d anonymous\n", anon);
+	    fprintf(stderr, "\n");
 	}
 	    break;
-	case THREAD_EXITS:
+	case THREAD_EXITS: {
+		char exit_type = msg->payload[0];
+		switch(exit_type) {
+		case 'S': finished++; break;
+		case 'F': failed++; break;
+		case 'C': cancelled++; break;
+	    }
+	}
 	    cb_release(&control_channel_buf,
 		       ALIGN(sizeof(struct message)+size));
 	    tasks[sender].control_flags=0;
 	    pthread_join(tasks[sender].thread, NULL);
-	    finished++;
 	    if (--task_count <= 0 && shutdown)
 		goto fini;
 	    if (__atomic_sub_fetch(&tasks[sender].name_in_use, 1,
@@ -609,8 +665,8 @@ static void *housekeeper(void *dummy)
 	    if (task_count == 0)
 		goto fini;
 	    for (int i = 1; i < num_tasks; i++)
-	    	if (tasks[i].nonce != 0)
-	    	    pthread_kill(tasks[i].thread, SIGUSR1);
+		if (tasks[i].nonce != 0)
+		    pthread_kill(tasks[i].thread, SIGUSR1);
 	    break;
 	default:
 	    errx(1, bad_msg, housekeeper_name);
@@ -627,6 +683,8 @@ fini:
 }
 
 #define ASSURE_INITIALIZED if (!initialized) initialize(L, 0, 0, 0)
+#define TASK_FAIL_IF_UNINITIALISED \
+    do if (!initialized) { lua_pushinteger(L, -1); return 1; } while(0)
 
 static int initialize(lua_State *L,
 		      unsigned int task_limit,
@@ -641,12 +699,12 @@ static int initialize(lua_State *L,
     lua_setglobal(L, tasklist_name);
 
     pthread_mutex_init(&control_channel_mutex, NULL);
-    struct sigaction action;
-
     sem_init(&control_channel_sem,0,0);
+
+    struct sigaction action;
     action.sa_handler = sigusr1_handler;
-    sigemptyset(&action.sa_mask);
     action.sa_flags = 0;
+    sigemptyset(&action.sa_mask);
     sigaction(SIGUSR1, &action, NULL);
     action.sa_handler = sigusr2_handler;
     sigaction(SIGUSR2, &action, NULL);
@@ -752,8 +810,9 @@ int validate_task(lua_State *L, int ix)
     int task_ix;
     if (lua_isnumber(L, ix)) {
 	task_ix = luaL_checkinteger(L, ix);
-	if (task_ix < 0 || task_ix >= num_tasks
-	    || luaL_checkinteger(L, ix+1) != tasks[task_ix].nonce)
+	if (task_ix < 0 || task_ix >= num_tasks ||
+	    !lua_isnoneornil(L, ix+1) &&
+	    luaL_checkinteger(L, ix+1) != tasks[task_ix].nonce)
 	    return -1;
     } else
 	task_ix = lookup_task(L, luaL_checkstring(L, ix));
@@ -762,7 +821,7 @@ int validate_task(lua_State *L, int ix)
 
 LUAFN(lookup_task)
 {
-    ASSURE_INITIALIZED;
+    TASK_FAIL_IF_UNINITIALISED;
     int task_ix = validate_task(L, 1);
     if (task_ix < 0)
 	return 0;
@@ -789,7 +848,7 @@ LUAFN(status)
     if (!initialized)
 	puts("Inactive");
     else if (my_index == 0)
-	send_ctl_msg(SHOW_STATUS, "", 0);
+	send_ctl_msg(SHOW_STATUS, lua_toboolean(L,1) ? "\1" : "\0", 1);
     return 0;
 }
 
@@ -838,17 +897,47 @@ LUAFN(flag_is_true)
 
 LUAFN(interrupt_task)
 {
-    ASSURE_INITIALIZED;
+    TASK_FAIL_IF_UNINITIALISED;
     int signo = 0;
     if (!lua_isnil(L, 1))
 	signo = lua_toboolean(L, 1) ? 12 : 10;
-
     int task_ix = validate_task(L, 2);
-    if (task_ix < 1)
-	return 0;
-    pthread_kill(tasks[task_ix].thread, signo);
+    if (task_ix > 0 && pthread_kill(tasks[task_ix].thread, signo) != 0)
+	task_ix = -1;
     lua_pushinteger(L, task_ix);
     return 1;
+}
+
+LUAFN(cancel_task)
+{
+    TASK_FAIL_IF_UNINITIALISED;
+    int task_ix = validate_task(L, 1);
+    if (task_ix > 0)
+	pthread_cancel(tasks[task_ix].thread);
+    lua_pushinteger(L, task_ix);
+    return 1;
+}
+
+LUAFN(set_cancel)
+{
+    int oldstate = -1, oldtype = -1;
+    if (initialized && my_index != 0) {
+	if (lua_type(L, 1) != LUA_TBOOLEAN && !lua_isnoneornil(L, 1))
+	    luaL_error(L, "Bad cancelstate");
+	if (lua_type(L, 2) != LUA_TBOOLEAN && !lua_isnoneornil(L, 2))
+	    luaL_error(L, "Bad canceltype");
+	if (!lua_isnoneornil(L,1))
+	    pthread_setcancelstate(lua_toboolean(L, 1) ?
+				   PTHREAD_CANCEL_ENABLE
+				   : PTHREAD_CANCEL_DISABLE, &oldstate);
+	if (!lua_isnoneornil(L,2))
+	    pthread_setcanceltype(lua_toboolean(L, 2) ?
+				  PTHREAD_CANCEL_ASYNCHRONOUS
+				  : PTHREAD_CANCEL_DEFERRED, &oldtype);
+    }
+    lua_pushinteger(L, oldstate);
+    lua_pushinteger(L, oldtype);
+    return 2;
 }
 
 static int getmsg(lua_State *L)
@@ -1083,6 +1172,8 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(change_flag),
 	FN_ENTRY(broadcast_flag),
 	FN_ENTRY(interrupt_task),
+	FN_ENTRY(cancel_task),
+	FN_ENTRY(set_cancel),
 	FN_ENTRY(flag_is_true),
 	FN_ENTRY(shutdown),
 	FN_ENTRY(send_message),
@@ -1099,10 +1190,12 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 
     luaL_register(L, "taskman", funcptrs);
 
-    lua_pushinteger(L, CHILD_SUCCESS);
-    lua_setfield(L, -2, "child_success");
-    lua_pushinteger(L, CHILD_FAILURE);
-    lua_setfield(L, -2, "child_failure");
+    lua_pushinteger(L, TASK_EXIT);
+    lua_setfield(L, -2, "task_exits");
+    lua_pushinteger(L, TASK_FAILURE);
+    lua_setfield(L, -2, "task_failure");
+    lua_pushinteger(L, TASK_CANCEL);
+    lua_setfield(L, -2, "task_cancelled");
 
     lua_newtable(L);
     lua_pushinteger(L, SCHED_RR);
@@ -1118,12 +1211,14 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     lua_setfield(L, -2, "sched");
 
     lua_newtable(L);
-    lua_pushinteger(L, TASK_BIRTH_ANNOUNCE);
-    lua_setfield(L, -2, "born");
-    lua_pushinteger(L, CHILD_SUCCESS);
-    lua_setfield(L, -2, "exit");
-    lua_pushinteger(L, CHILD_SUCCESS);
-    lua_setfield(L, -2, "fail");
+    lua_pushinteger(L, TASK_CREATE);
+    lua_setfield(L, -2, "created");
+    lua_pushinteger(L, TASK_EXIT);
+    lua_setfield(L, -2, "exited");
+    lua_pushinteger(L, TASK_FAILURE);
+    lua_setfield(L, -2, "failed");
+    lua_pushinteger(L, TASK_CANCEL);
+    lua_setfield(L, -2, "cancelled");
     lua_setfield(L, -2, "announce");
 
     lua_getglobal(L, "string");
