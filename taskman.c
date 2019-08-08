@@ -51,10 +51,11 @@ void show_stack(lua_State *L)
 
 // Client message types
 #define NORMAL_CLIENT_MSG 0
-#define TASK_CREATE  4096
-#define TASK_EXIT 4097
-#define TASK_FAILURE 4098
-#define TASK_CANCEL   4099
+#define TASK_CREATE 4096
+#define TASK_BAD_CREATE 4097
+#define TASK_EXIT 4098
+#define TASK_FAILURE 4099
+#define TASK_CANCEL 40100
 
 #define MAX_FLAG 11
 #define MAX_MSG_TYPE 4095
@@ -63,14 +64,16 @@ void show_stack(lua_State *L)
 
 #define SUBSCRIBE_SHIFT 24
 char *announcements[] = {
-#define ANNOUNCE_CHILD_EXITS (1<<SUBSCRIBE_SHIFT)
+#define RECEIVE_CHILD_EXITS (1<<SUBSCRIBE_SHIFT)
     "child_task_exits",
-#define ANNOUNCE_ALL_TASK_EXITS (2<<SUBSCRIBE_SHIFT)
+#define RECEIVE_ALL_TASK_EXITS (2<<SUBSCRIBE_SHIFT)
     "any_task_exits",
-#define ANNOUNCE_NEW_NAMED_TASKS (4<<SUBSCRIBE_SHIFT)
+#define RECEIVE_NEW_NAMED_TASKS (4<<SUBSCRIBE_SHIFT)
     "new_named_task",
-#define ANNOUNCE_ANY_NEW_TASKS (8<<SUBSCRIBE_SHIFT)
+#define RECEIVE_ANY_NEW_TASKS (8<<SUBSCRIBE_SHIFT)
     "any_new_task",
+#define RECEIVE_CREATE_FAILURES (16<<SUBSCRIBE_SHIFT)
+    "create_failures",
     NULL};
 
 
@@ -101,7 +104,8 @@ struct task {
     pthread_mutex_t incoming_mutex;
     int query_index;
     int query_extra;
-    uint32_t name_in_use;
+    uint32_t name_in_useA, name_in_useB;
+    uint32_t *name_in_use;
     char *name;
     lua_State *my_state;
 };
@@ -118,6 +122,7 @@ static uint8_t *control_channel_store;
 static struct circbuf control_channel_buf;
 static sem_t control_channel_sem;
 static pthread_mutex_t control_channel_mutex;
+static bool display_create_errors;
 
 struct message {
     uint32_t size;
@@ -240,8 +245,6 @@ static __thread struct task *task;  // Will be shadowed later on.
 
 void cancellation_handler(void *dummy)
 {
-    static char cancelmsg[] = "cancelled!";
-
     if (show_exits || show_errors)
 	if (task->name)
 	    fprintf(stderr, "Task %s has been cancelled\n", task->name);
@@ -252,10 +255,9 @@ void cancellation_handler(void *dummy)
     for (int i=0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 &&
 	    (i==task->parent_index && tasks[i].nonce == task->parent_nonce &&
-	     tasks[i].control_flags & ANNOUNCE_CHILD_EXITS ||
-	     tasks[i].control_flags & ANNOUNCE_ALL_TASK_EXITS))
-	    send_client_msg(&tasks[i], TASK_CANCEL, cancelmsg,
-			    sizeof(cancelmsg));
+	     tasks[i].control_flags & RECEIVE_CHILD_EXITS ||
+	     tasks[i].control_flags & RECEIVE_ALL_TASK_EXITS))
+	    send_client_msg(&tasks[i], TASK_CANCEL, "", 0);
 
     tasks[my_index].nonce = 0;
     if (send_ctl_msg(THREAD_EXITS, "C", 1))
@@ -265,9 +267,9 @@ void cancellation_handler(void *dummy)
 
 static void *new_thread(void *luastate)
 {
-    // Race?
     int previous_cancel;
     bool succeeded = false;
+    // Race?
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &previous_cancel);
     sem_post(&task_running_sem);
     L = luastate;
@@ -281,7 +283,6 @@ static void *new_thread(void *luastate)
 
     // These aren't GCable.
     __atomic_add_fetch(&task->queue_in_use, 1, __ATOMIC_SEQ_CST);
-    __atomic_add_fetch(&task->name_in_use, 1, __ATOMIC_SEQ_CST);
 
     // Set exit status printing as asked.
     lua_getfield(L, -1, "show_errors");
@@ -330,9 +331,9 @@ static void *new_thread(void *luastate)
 
     for (int i=0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 &&
-	    (tasks[i].control_flags & ANNOUNCE_NEW_NAMED_TASKS &&
+	    (tasks[i].control_flags & RECEIVE_NEW_NAMED_TASKS &&
 	     tasks[my_index].name ||
-	     tasks[i].control_flags & ANNOUNCE_ANY_NEW_TASKS))
+	     tasks[i].control_flags & RECEIVE_ANY_NEW_TASKS))
 	    send_client_msg(&tasks[i], TASK_CREATE, "", 0);
 
     int pcall_succeeds = 0;
@@ -375,14 +376,15 @@ bugout:
 	    fprintf(stderr, "Task %d,%d failed: %s\n",
 		    my_index, task->nonce, lua_tostring(L, -1));
 
+    // Concatenate sender name since it might get garbage collected.
     for (int i=0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 &&
 	    (i==task->parent_index && tasks[i].nonce == task->parent_nonce &&
-	     tasks[i].control_flags & ANNOUNCE_CHILD_EXITS ||
-	     tasks[i].control_flags & ANNOUNCE_ALL_TASK_EXITS))
-		send_client_msg(&tasks[i],
-				succeeded ? TASK_EXIT : TASK_FAILURE,
-				lua_tostring(L, -1), lua_objlen(L, -1));
+	     tasks[i].control_flags & RECEIVE_CHILD_EXITS ||
+	     tasks[i].control_flags & RECEIVE_ALL_TASK_EXITS))
+	    send_client_msg(&tasks[i],
+			    succeeded ? TASK_EXIT : TASK_FAILURE,
+			    lua_tostring(L, -1), lua_objlen(L, -1));
 
     tasks[my_index].nonce = 0;
     if (send_ctl_msg(THREAD_EXITS, succeeded ? "S" : "F", 1))
@@ -396,6 +398,7 @@ static int create_task(uint8_t *taskdescr, int size,
 {
     lua_State *newstate;
     struct task *task = NULL;
+    struct task *sender_task = &tasks[sender];
     static unsigned int last_task_allocated;
     // Create tast is invoked from housekeeper only, so L refers to
     // housekeeper's dictionary store rather than client's lua_States.
@@ -443,6 +446,7 @@ static int create_task(uint8_t *taskdescr, int size,
 
     // Set task name if given one.
     lua_getfield(newstate, -1, "task_name");
+    char *oldname = task->name;
     if (lua_isnil(newstate, -1)) {
 	task->name = NULL;
     } else {
@@ -459,6 +463,16 @@ static int create_task(uint8_t *taskdescr, int size,
 	    goto bugout;
 	}
 	task->name = strdup(namestr);
+    }
+    if (task->name_in_use == NULL)
+	task->name_in_use = &task->name_in_useA;
+    else if (oldname) {
+    	uint32_t *old_in_use = task->name_in_use;
+	task->name_in_use = old_in_use == &task->name_in_useB ?
+	    &task->name_in_useA : &task->name_in_useB;
+	// Spin for old getmsg to quit.
+	while (old_in_use);
+	free(oldname);
     }
     lua_pop(newstate, 1);
 
@@ -500,13 +514,22 @@ static int create_task(uint8_t *taskdescr, int size,
 
     return freetask;
 bugout:
-    puts(lua_tostring(newstate, -1));
+    if (display_create_errors)
+	fprintf(stderr, "%s\n", lua_tostring(newstate, -1));
+    if (sender_task->nonce != 0 &&
+	sender_task->control_flags & RECEIVE_CREATE_FAILURES) {
+	size_t len;
+	const char *errmsg = lua_tolstring(newstate, -1, &len);
+	send_client_msg(sender_task, TASK_BAD_CREATE, errmsg, len);
+    }
     if (task) {
 	if (task->incoming_store)
 	    free_twinmap(task->incoming_store, task->incoming_queue.size);
 	if (task->name)
 	    free(task->name);
     }
+	
+    lua_pushstring(L, lua_tostring(newstate, -1));
     lua_close(newstate);
     return -1;
 }
@@ -607,9 +630,9 @@ static void *housekeeper(void *dummy)
 	    bool show_anon = msg->payload[0];
 	    cb_release(&control_channel_buf,
 		       ALIGN(sizeof(struct message)+size));
-	    printf("\nRunning: %d / Finished: %d / "
-		   "Failed: %d / Cancelled: %d\n\n",
-		   task_count+1, finished, failed, cancelled);
+	    fprintf(stderr, "\nRunning: %d / Finished: %d / "
+		    "Failed: %d / Cancelled: %d\n\n",
+		    task_count+1, finished, failed, cancelled);
 	    int anon = 0;
 	    for (int i = 0; i < num_tasks; i++) {
 	    	if (tasks[i].nonce != 0) {
@@ -640,13 +663,9 @@ static void *housekeeper(void *dummy)
 	    pthread_join(tasks[sender].thread, NULL);
 	    if (--task_count <= 0 && shutdown)
 		goto fini;
-	    if (__atomic_sub_fetch(&tasks[sender].name_in_use, 1,
-				       __ATOMIC_SEQ_CST) == 0 &&
-		tasks[sender].name) {
+	    if (tasks[sender].name) {
 		lua_pushnil(L);
 		lua_setfield(L, 1, tasks[sender].name);
-		free(tasks[sender].name);
-		tasks[sender].name = NULL;
 	    }
 	    // Toss message queue store if GCable.
 	    if (__atomic_sub_fetch(&tasks[sender].queue_in_use, 1,
@@ -730,7 +749,8 @@ static int initialize(lua_State *L,
     tasks->name = maintask_name;
     tasks->nonce = 1;
     tasks->queue_in_use = 1;
-    tasks->name_in_use = 1;
+    tasks->name_in_use = &tasks->name_in_useA;
+    tasks->name_in_useA = 1;
     sem_init(&tasks->housekeeper_pending, 0, 0);
 
     return pthread_create(&housekeeper_thread, NULL, &housekeeper, NULL);
@@ -842,6 +862,9 @@ LUAFN(shutdown)
 	send_ctl_msg(REQUEST_SHUTDOWN, "", 0);
 	sem_wait(&tasks[my_index].housekeeper_pending);
 	pthread_join(housekeeper_thread, NULL);
+	// Don't free ":main:"
+	for (int i=1; i < num_tasks; i++)
+	    free(tasks[i].name);
 	free(tasks);
 	free_twinmap(control_channel_store, control_channel_size);
 	initialized = false;
@@ -984,19 +1007,19 @@ static int getmsg(lua_State *L)
     size_t size = msg->size;
     lua_pushlstring(L, (char *)msg->payload, size);
     lua_pushinteger(L, msg->type);
+    int sender_nonce = msg->nonce;
     cb_release(&task->incoming_queue, ALIGN(sizeof(struct message)+size));
     int retcnt = 4;
-    if (__atomic_add_fetch(&sender_task->name_in_use, 1,
-			   __ATOMIC_SEQ_CST) == 2 &&
-	sender_task->name) {
-	lua_pushstring(L, sender_task->name);
-	retcnt++;
-    }
-    if (__atomic_sub_fetch(&sender_task->name_in_use, 1,
-			   __ATOMIC_SEQ_CST) == 0 &&
-	sender_task->name) {
-	free(task->name);
-	task->name = NULL;
+    if (sender_task->nonce == 0 ||
+	sender_task->nonce == sender_nonce) {
+	// This gets swapped, so be sure we use the same one both times.
+	uint32_t *current_in_use = task->name_in_use;
+	__atomic_add_fetch(current_in_use, 1, __ATOMIC_SEQ_CST);
+	if (sender_task->name) {
+	    lua_pushstring(L, sender_task->name);
+	    retcnt++;
+	}
+	__atomic_sub_fetch(current_in_use, 1, __ATOMIC_SEQ_CST);
     }
     lua_pushinteger(L, sender);
     lua_pushinteger(L, sender_task->nonce);
@@ -1181,6 +1204,12 @@ LUAFN(set_affinity)
 #endif
 }
 
+LUAFN(set_display_create_errors)
+{
+    display_create_errors = lua_toboolean(L, 1);
+    return 0;
+}
+
 LUALIB_API int luaopen_taskman(lua_State *L)
 {
     const luaL_Reg funcptrs[] = {
@@ -1201,6 +1230,7 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(set_reception),
 	FN_ENTRY(set_subscriptions),
 	FN_ENTRY(get_message),
+	FN_ENTRY(set_display_create_errors),
 	FN_ENTRY(status),
 	FN_ENTRY(set_priority), // Requires special privs.
 	FN_ENTRY(set_affinity),
@@ -1232,6 +1262,8 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     lua_newtable(L);
     lua_pushinteger(L, TASK_CREATE);
     lua_setfield(L, -2, "created");
+    lua_pushinteger(L, TASK_BAD_CREATE);
+    lua_setfield(L, -2, "create_failed");
     lua_pushinteger(L, TASK_EXIT);
     lua_setfield(L, -2, "exited");
     lua_pushinteger(L, TASK_FAILURE);

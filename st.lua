@@ -37,6 +37,7 @@ t.create_task{program=writer}
 
 local m1, _, s1 = t.wait_message()
 local m2, _, s2 = t.wait_message()
+
 if (s1 == 'reader') then m1,m2=m2,m1 end
 
 io.write(f.thaw(m1)[1], '\n', f.thaw(m2)[1], '\n')
