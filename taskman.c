@@ -35,7 +35,9 @@ void show_stack(lua_State *L)
 //#define MIN_CLIENT_BUFFER_SIZE (1<<18)
 #define MIN_CLIENT_BUFFER_SIZE (1<<18)
 
-#define HOUSEKEEPER_WAKE_USEC 1000000
+// Wake 50 times per second.
+#define HOUSEKEEPER_WAKE_USEC 50000
+#define SECONDS_HOUSEKEEPER (1000000/HOUSEKEEPER_WAKE_USEC)
 
 #define INLINE_CBUF_CODE
 #include "cbuf.h"
@@ -528,7 +530,8 @@ static void *housekeeper(void *dummy)
     struct message *msg;
     int task_count = 0;
     int finished = 0, failed = 0, cancelled = 0;
-    int straggler_delay = 2;
+    // Kill stragglers on shutdown after 1/4 sec.
+    int straggler_delay =  SECONDS_HOUSEKEEPER / 4;
 
     if ((L = luaL_newstate()) == NULL)
 	err(1, housekeeper_name);
@@ -548,7 +551,7 @@ static void *housekeeper(void *dummy)
     clock_gettime(CLOCK_REALTIME, &ts);
     while (1) {
 	if (sem_timedwait(&control_channel_sem, &ts) < 0) {
-	    if (shutdown && --straggler_delay == 0)
+	    if (shutdown && --straggler_delay <= 0)
 		kill_stragglers();
 
 	    if ((ts.tv_nsec += 1000L*HOUSEKEEPER_WAKE_USEC) > 1000000000) {
