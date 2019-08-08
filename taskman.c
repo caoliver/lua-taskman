@@ -1041,7 +1041,7 @@ LUAFN(timestamp_name)
     return 1;
 }
 
-LUAFN(time_from_now)
+LUAFN(seconds_from_now)
 {
     double interval = lua_tonumber(L, 1);
     if (interval < 0)
@@ -1065,7 +1065,7 @@ LUAFN(wait_message)
 	sem_wait(&tasks[my_index].incoming_sem);
     else {
 	if (lua_isnumber(L, 1))
-	    CALL_LUAFN(time_from_now);
+	    CALL_LUAFN(seconds_from_now);
 	if (!lua_getmetatable(L, 1) ||
 	    !lua_rawequal(L, -1, lua_upvalueindex(1)))
 	    luaL_error(L, "Bad time spec");
@@ -1287,8 +1287,8 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     lua_pushvalue(L, -1);
     lua_pushcclosure(L, LUAFN_NAME(wait_message), 1);
     lua_setfield(L, -3, "wait_message");
-    lua_pushcclosure(L, LUAFN_NAME(time_from_now), 1);
-    lua_setfield(L, -2, "time_from_now");
+    lua_pushcclosure(L, LUAFN_NAME(seconds_from_now), 1);
+    lua_setfield(L, -2, "seconds_from_now");
 
     return 1;
 }

@@ -1,4 +1,6 @@
 function kill_some(i)
+   -- This still needs to get loaded here as well since, this is in
+   -- a distinct lua_State.
    t=require'taskman'
    f=require 'ffi'
    f.cdef [[ void usleep(int); void pause(); ]]
@@ -28,6 +30,9 @@ t=require 'taskman'
 f=require 'ffi'
 f.cdef [[ void usleep(int); ]]
 
+-- Get child exit messages
+t.set_subscriptions{child_task_exits=true}
+
 -- Pass the value of i as the first argument to our function.
 for i=1,6 do
    t.create_task{program=kill_some, show_errors=true, i}
@@ -35,15 +40,22 @@ for i=1,6 do
    t.wait_message()
 end
 
+-- Show who's running.
+t.status()
+
+-- Catch the first five exits.
+-- Should take far less than a second.
+ts=t.seconds_from_now(1)
+for i=1,5 do t.wait_message(ts) end
+
+-- Ignore child exit messages
+t.set_subscriptions{child_task_exits=false}
+
+-- Show who's *still* running.
 t.status()
 
 -- Wait for task 3 to tell us he's finished.
 local _,_,s=t.wait_message()
 
--- The exit statuses are not instantaneous.
-f.C.usleep(100)
-t.status()
-
 -- Shutdown will kill off anyone (task 3) loitering.
-f.C.usleep(5000)
 t.shutdown()
