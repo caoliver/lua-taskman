@@ -44,31 +44,30 @@ assert(u.here[1] == "cycle")
 
 local o = { x = 11, y = 22 }
 local seen_hook
-setmetatable(o, {
-   __freeze = function(o)
-      local x = o.x
-      local y = o.y
-      seen_hook = true
-      local mt = getmetatable(o)
-      local print = print
-      return function()
-         local o = { }
-         o.x = x
-         o.y = y
-         print("constant table: 'print'")
-         return setmetatable(o, mt)
-      end
-   end
-})
+setmetatable(o, {})
 
-local s = marshal.encode(o, { print })
+local s = marshal.encode(o, { print }, nil, nil,
+			 function ()
+			    local x = o.x
+			    local y = o.y
+			    seen_hook = true
+			    local mt = getmetatable(o)
+			    local print = print
+			    return function()
+			       local o = { }
+			       o.x = x
+			       o.y = y
+			       print("constant table: 'print'")
+			       return setmetatable(o, mt)
+			    end
+end)
+
 assert(seen_hook)
 local p = marshal.decode(s, { print })
 assert(p ~= o)
 assert(p.x == o.x)
 assert(p.y == o.y)
 assert(getmetatable(p))
-assert(type(getmetatable(p).__freeze) == "function")
 
 local o = { 42 }
 local a = { o, o, o }
@@ -103,15 +102,14 @@ assert(type(t[4]) == "function")
 assert(t[1]() == t[4])
 
 local u = newproxy()
-debug.setmetatable(u, {
-   __freeze = function()
+
+local s = marshal.encode({u}, {}, nil, nil,
+   function()
       return function()
          return newproxy()
       end
-   end
-})
+end)
 
-local s = marshal.encode{u}
 local t = marshal.decode(s)
 assert(type(t[1]) == "userdata")
 

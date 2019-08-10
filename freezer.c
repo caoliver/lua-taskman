@@ -58,9 +58,10 @@ unsigned char magic_header[] = MAGIC_COOKIE;
 
 static int big_endian=0;
 
-#define SEEN_OBJECT_IDX 3
-#define SEEN_UPVALUE_IDX 4
-#define STRING_ACCUMULATOR_IDX 5
+#define USER_SERIALIZER_IDX 3
+#define SEEN_OBJECT_IDX 4
+#define SEEN_UPVALUE_IDX (SEEN_OBJECT_IDX+1)
+#define STRING_ACCUMULATOR_IDX (SEEN_OBJECT_IDX+2)
 
 struct buffer {
     lua_State *L;
@@ -277,7 +278,6 @@ static int use_or_make_ref(lua_State *L, int index,
 {
     uint8_t numbuf[9];
     size_t len;
-
     lua_pushvalue(L, index);
     lua_rawget(L, SEEN_OBJECT_IDX);
     if (!lua_isnil(L, -1)) {
@@ -293,9 +293,6 @@ static int use_or_make_ref(lua_State *L, int index,
     return 0;
 }
 
-static const char *bad_freeze =
-    "__freeze must return a lua closure";
-
 static void freeze_recursive(lua_State *L,
 			     int index,
 			     unsigned int *seen_object_count,
@@ -310,22 +307,22 @@ static void freeze_recursive(lua_State *L,
     // Convert index to bottom relative.
     if (index < 0)
 	index += 1 + lua_gettop(L);
-    
+
     switch(lua_type(L, index)) {
     case LUA_TNIL:
 	buf_addlstring(catbuf, STRLIT(VALUE_NIL), 1);
-	break;
+	return;
     case LUA_TBOOLEAN:
 	buf_addlstring(catbuf,
 			lua_toboolean(L, index)
 			? STRLIT(VALUE_TRUE)
 			: STRLIT(VALUE_FALSE),
 			1);
-	break;
+	return;
     case LUA_TNUMBER:
 	len = freeze_num(lua_tonumber(L, index), numbuf);
 	buf_addlstring(catbuf, (void *)numbuf, len);
-	break;
+	return;
     case LUA_TSTRING:
 	if (!merge_dupl_strs ||
 	    !use_or_make_ref(L, index, seen_object_count, catbuf)) {
@@ -335,17 +332,12 @@ static void freeze_recursive(lua_State *L,
 	    const char *str = lua_tolstring(L, index, &len);
 	    buf_addlstring(catbuf, str, len);
 	}
-	break;
+	return;
     case LUA_TTABLE:
 	if (!use_or_make_ref(L, index, seen_object_count, catbuf)) {
-	    if (luaL_getmetafield(L, index, "__freeze")) {
-		lua_pushvalue(L, index);
-		lua_call(L, 1, 1);
-		if (!lua_isfunction(L, -1) || lua_iscfunction(L,-1))
-		    luaL_error(L, bad_freeze);
-		buf_addlstring(catbuf, STRLIT(CONSTRUCTOR), 1);
-		freeze_recursive(L, -1, seen_object_count, seen_upvalue_count,
-				 catbuf, merge_dupl_strs, strip_debug);
+	    if (lua_getmetatable(L, index)) {
+		lua_pop(L, 1);
+		break;
 	    } else {
 		unsigned int array_size = lua_objlen(L, index);
 		len = freeze_uint(array_size, TYPE_TABLE, numbuf);
@@ -375,24 +367,15 @@ static void freeze_recursive(lua_State *L,
 		buf_addlstring(catbuf, STRLIT(TABLE_END), 1);
 	    }
 	}
-	break;
+	return;
     case LUA_TUSERDATA:
-	if (!use_or_make_ref(L, index, seen_object_count, catbuf)) {
-	    if (!luaL_getmetafield(L, index, "__freeze"))
-		luaL_error(L, "Can't serialize this userdata.");
-	    lua_pushvalue(L, index);
-	    lua_call(L, 1, 1);
-	    if (!lua_isfunction(L, -1) || lua_iscfunction(L,-1))
-		luaL_error(L, bad_freeze);
-	    buf_addlstring(catbuf, STRLIT(CONSTRUCTOR), 1);
-	    freeze_recursive(L, -1, seen_object_count, seen_upvalue_count,
-			     catbuf, merge_dupl_strs, strip_debug);
-	}
+	if (use_or_make_ref(L, index, seen_object_count, catbuf))
+	    return;
 	break;
     case LUA_TFUNCTION:
 	if (!use_or_make_ref(L, index, seen_object_count, catbuf)) {
 	    if (lua_iscfunction(L, index))
-		luaL_error(L, "Can't serialize a C function.");
+		break;
 	    buf_addlstring(catbuf, STRLIT(LUA_CLOSURE), 1);
 	    lua_pushvalue(L, index);
 	    lua_pushboolean(L, strip_debug);
@@ -429,10 +412,47 @@ static void freeze_recursive(lua_State *L,
 	    }
 	    buf_addlstring(catbuf, STRLIT(TABLE_END), 1);
 	}
-	break;
+	return;
     default:
-	luaL_error(L, "Can't serialize type %s", luaL_typename(L, index));
+	if (use_or_make_ref(L, index, seen_object_count, catbuf)) {
+	    return;
+	}
     }
+
+    if (lua_isnil(L, USER_SERIALIZER_IDX))
+	goto bugout;
+    int curtop = lua_gettop(L);
+    lua_pushvalue(L, USER_SERIALIZER_IDX);
+    lua_pushvalue(L, index);
+    lua_call(L, 1, LUA_MULTRET);
+    int rvals = lua_gettop(L)-curtop;
+    if (rvals == 0 || !lua_toboolean(L, curtop+1))
+	goto bugout;
+    if (!lua_isfunction(L, curtop+1)) {
+	if (rvals == 1)
+	    lua_pushnil(L);
+	else
+	    lua_settop(L, curtop+2);
+	int replace_ix=index==1 ? curtop+1 : curtop;
+	lua_replace(L, replace_ix);
+	lua_settop(L, replace_ix);
+	freeze_recursive(L, -1, seen_object_count,
+				     seen_upvalue_count, catbuf,
+				     merge_dupl_strs, strip_debug);
+	return;
+    }
+    if (lua_iscfunction(L, -1))
+	luaL_error(L, "Constructor must be a Lua function!");
+    buf_addlstring(catbuf, STRLIT(CONSTRUCTOR), 1);
+    freeze_recursive(L, -1, seen_object_count, seen_upvalue_count,
+		     catbuf, merge_dupl_strs, strip_debug);
+    lua_pop(L, 1);
+    return;
+bugout:
+    if (lua_type(L, index) == LUA_TTABLE)
+	luaL_error(L,
+		   "Table has a metatable, but no user serializer was given.");
+    luaL_error(L, "Can't serialize type %s", luaL_typename(L, index));
 }
 
 int freezer_freeze(lua_State *L)
@@ -448,7 +468,11 @@ int freezer_freeze(lua_State *L)
     bool strip_debug;
     merge_dupl_strs = lua_toboolean(L, 3);     // Default false
     strip_debug = lua_toboolean(L, 4);         // Default false
-    lua_settop(L, 2);
+    if (lua_gettop(L) >= 5) {
+      lua_settop(L, 5);
+	lua_insert(L, 3);
+    }
+    lua_settop(L, 3);
 
     lua_newtable(L); // Seen object table
     lua_newtable(L); // Seen upvalue table
@@ -516,6 +540,11 @@ static uint32_t thaw_string_header(lua_State *L, uint8_t **src,
     if (string_len > *available) luaL_error(L, end_of_data);
     return string_len;
 }
+
+#undef SEEN_OBJECT_IDX
+#undef SEEN_UPVALUE_IDX
+#define SEEN_OBJECT_IDX 3
+#define SEEN_UPVALUE_IDX (SEEN_OBJECT_IDX+1)
 
 static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 			   unsigned int *seen_object_count,
@@ -729,7 +758,7 @@ static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
 		lua_pop(L, 1);
 		break;
 	    }
-	    lua_rawseti(L, 3, i);
+	    lua_rawseti(L, SEEN_OBJECT_IDX, i);
 	}
     }
 

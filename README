@@ -55,13 +55,25 @@ If you will serialize functions, you will need something like the following:
     lua_getfield(L, -1, "dump");
     lua_pushcclosure(L, my_freeze_func, 1);
 
-Hooks
+Complex value handling with a user provided serialization function:
 -----
 
-A hook is provided for influencing serializing behaviour via the `__freeze`
-metamethod.  The `__freeze` metamethod is expected to return a closure which
-is called during deserialization. The return value of the closure is taken as
-the final thawed result.
+By itself, freezer can serialize simple values: nil, booleans, numbers,
+strings, functions, closures, and tables which don't contain metatables.
+The caller may provide a helper function as the fifth argument to
+freezer.freeze.  This function takes the data to be serialized at its
+only argument and returns one of three things:
+
+    a) a lua false value.  This means the function doesn't handle this
+    data, and the serializer should stop with an error.
+
+    b) a non-function lua true value followed optionally by a value to
+    serialize in place of the offending one.  If no value is provided,
+    nil is substituted.
+
+    c) a constructor function taking no arguments to be evaluated
+    when freezer.thaw is invoked which returns a value to use in place
+    of the offending one in the restored data.
 
 This is useful for serializing both userdata and for use with object-oriented
 Lua, since metatables are not serialized.
@@ -86,6 +98,13 @@ For example:
        end
     end
 
+To serialize an array of points:
+
+    point_array={Point.new(4,5), Point.new(-9,4), Point.new(1,-17)}
+
+    freezer.freeze(point_array, {}, nil, nil,
+                   function (point) return point:__freeze() end
+
 The above shows a way to store an "instance" of Point (if you're thinking in
 OO terms). In this case `Point` itself will be included in the frozen chunk
 because it's referenced as an upvalue of the returned closure.
@@ -93,15 +112,14 @@ because it's referenced as an upvalue of the returned closure.
 The `__freeze` hook may *NOT* refer to the receiver (i.e. `self` in the
 example) because this will cause deep recursion when upvalues are serialized.
 
+Note that in a real application, the user serializer would need to distinguish
+to sorts of data by type in order to determine appropriate handling.
+
+Also, if the substitution or upvalues of the constructor function refer
+to previously seen special values, the produced serialization will be
+corrupt, and thaw will produce an error if fed it.
+
 Limitations: ------------
-
-Coroutines are not serialized. Userdata doesn't serialize either however
-support for userdata the `__freeze` metatable hook can be used.
-
-Metatables and function environments are not serialized.
-
-Attempt to serialize threads, C functions, cdata (LuaJIT), and userdata
-that contains no `__freeze` hook raises an exception.
 
 Serialized code may not be portable.
 
