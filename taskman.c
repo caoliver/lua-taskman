@@ -832,7 +832,7 @@ int validate_task(lua_State *L, int ix)
 {
     int task_ix;
     if (lua_isnumber(L, ix)) {
-	task_ix = luaL_checkinteger(L, ix);
+	int task_ix = luaL_checkinteger(L, ix);
 	if (task_ix < 0 || task_ix >= num_tasks)
 	    return -1;
 	if (lua_isnoneornil(L, ix+1)) {
@@ -840,9 +840,9 @@ int validate_task(lua_State *L, int ix)
 		return -1;
 	} else if (luaL_checkinteger(L, ix+1) != tasks[task_ix].nonce)
 	    return -1;
-    } else
-	task_ix = lookup_task(L, luaL_checkstring(L, ix));
-    return task_ix;
+	return task_ix;
+    }
+    return lookup_task(L, luaL_checkstring(L, ix));
 }
 
 LUAFN(lookup_task)
@@ -892,9 +892,9 @@ LUAFN(change_flag)
     int task_ix = validate_task(L, 3);
     if (task_ix < 0)
 	return 0;
-     tasks[task_ix].control_flags = (tasks[task_ix].control_flags &
-				     ~(1<<flag) |
-				     lua_toboolean(L, 2)<<flag);
+     tasks[task_ix].control_flags =
+	 (tasks[task_ix].control_flags & ~(1<<flag) |
+	  lua_toboolean(L, 2)<<flag);
     lua_pushinteger(L, task_ix);
     return 1;
 }
@@ -907,10 +907,9 @@ LUAFN(broadcast_flag)
 	luaL_error(L, badflag, flag);
     for (int i = 0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0)
-	    tasks[i].control_flags = (tasks[i].control_flags &
-				      ~(1<<flag) |
-				      lua_toboolean(L, 2)<<flag);
-
+	    tasks[i].control_flags =
+		(tasks[i].control_flags & ~(1<<flag) |
+		 lua_toboolean(L, 2)<<flag);
     return 0;
 }
 
