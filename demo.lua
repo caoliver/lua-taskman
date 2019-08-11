@@ -27,8 +27,6 @@ function kill_some(i)
 end
 
 t=require 'taskman'
-f=require 'ffi'
-f.cdef [[ void usleep(int); ]]
 
 -- Get child exit messages
 t.set_subscriptions{child_task_exits=true}
