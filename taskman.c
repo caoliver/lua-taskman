@@ -84,7 +84,6 @@ __thread lua_State *L;
 
 __thread uint16_t my_index;
 
-static char *tasklist_name = "__task_list";
 static char *housekeeper_name = "HouseKeeper";
 static char *maintask_name = ":main:";
 
@@ -423,9 +422,6 @@ static int create_task(uint8_t *taskdescr, int size,
 	goto bugout;
     }
     luaL_openlibs(newstate);
-    // Add task ID cache
-    lua_newtable(newstate);
-    lua_setglobal(newstate, tasklist_name);
     // Add error handler
     lua_pushcfunction(newstate, LUAFN_NAME(traceback));
     // Unpack task description
@@ -717,9 +713,6 @@ static int initialize(lua_State *L,
 	luaL_error(L, "TASKMAN is already initialized");
     initialized = true;
 
-    lua_newtable(L);
-    lua_setglobal(L, tasklist_name);
-
     pthread_mutex_init(&control_channel_mutex, NULL);
     sem_init(&control_channel_sem,0,0);
 
@@ -800,13 +793,13 @@ struct task_cache_entry {
 int lookup_task(lua_State *L, const char *name)
 {
     int top = lua_gettop(L);
-    lua_getglobal(L, tasklist_name);
-    lua_getfield(L, -1, name);
-    // Name / table / lookup
+    lua_getfield(L, lua_upvalueindex(1), name);
     if (!lua_isnil(L, -1)) {
 	struct task_cache_entry *task_entry = (void *)lua_tostring(L, -1);
-	if (tasks[task_entry->task_ix].nonce == task_entry->nonce)
+	if (tasks[task_entry->task_ix].nonce == task_entry->nonce) {
+	    lua_settop(L, top);
 	    return task_entry->task_ix;
+	}
     }
     lua_pop(L, 1);
     if (send_ctl_msg(GET_TASK_INDEX, name, strlen(name))) {
@@ -822,7 +815,7 @@ int lookup_task(lua_State *L, const char *name)
 	    lua_pushlstring(L, (void *)&task_entry, sizeof(task_entry));
 	} else
 	    lua_pushnil(L);
-	lua_setfield(L, -4, name);
+	lua_setfield(L, lua_upvalueindex(1), name);
     }
     lua_settop(L, top);
     return result;
@@ -830,7 +823,6 @@ int lookup_task(lua_State *L, const char *name)
 
 int validate_task(lua_State *L, int ix)
 {
-    int task_ix;
     if (lua_isnumber(L, ix)) {
 	int task_ix = luaL_checkinteger(L, ix);
 	if (task_ix < 0 || task_ix >= num_tasks)
@@ -1211,20 +1203,18 @@ LUAFN(set_display_create_errors)
 
 LUALIB_API int luaopen_taskman(lua_State *L)
 {
+    /********************/
+    /* NORMAL FUNCTIONS */
+    /********************/
+
     const luaL_Reg funcptrs[] = {
 	FN_ENTRY(initialize),
-	FN_ENTRY(lookup_task),
-	FN_ENTRY(change_flag),
 	FN_ENTRY(broadcast_flag),
-	FN_ENTRY(interrupt_task),
 	FN_ENTRY(interrupt_all),
-	FN_ENTRY(cancel_task),
 	FN_ENTRY(cancel_all),
 	FN_ENTRY(set_cancel),
 	FN_ENTRY(flag_is_true),
 	FN_ENTRY(shutdown),
-	FN_ENTRY(send_message),
-	FN_ENTRY(send_message_with_type),
 	FN_ENTRY(broadcast_message),
 	FN_ENTRY(set_reception),
 	FN_ENTRY(set_subscriptions),
@@ -1238,56 +1228,75 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 
     luaL_register(L, "taskman", funcptrs);
 
-    lua_pushinteger(L, TASK_EXIT);
-    lua_setfield(L, -2, "task_exits");
-    lua_pushinteger(L, TASK_FAILURE);
-    lua_setfield(L, -2, "task_failure");
-    lua_pushinteger(L, TASK_CANCEL);
-    lua_setfield(L, -2, "task_cancelled");
+    /************/
+    /* CLOSURES */
+    /************/
 
-    lua_newtable(L);
-    lua_pushinteger(L, SCHED_RR);
-    lua_setfield(L, -2, "rr");
-    lua_pushinteger(L, SCHED_FIFO);
-    lua_setfield(L, -2, "fifo");
-    lua_pushinteger(L, SCHED_IDLE);
-    lua_setfield(L, -2, "idle");
-    lua_pushinteger(L, SCHED_BATCH);
-    lua_setfield(L, -2, "batch");
-    lua_pushinteger(L, SCHED_OTHER);
-    lua_setfield(L, -2, "other");
-    lua_setfield(L, -2, "sched");
+#define STORECCLOSURE(NAME,PARAMS,WHERE)			\
+    lua_pushcclosure(L, LUAFN_NAME(NAME), PARAMS);	\
+    lua_setfield(L, WHERE, #NAME)
 
-    lua_newtable(L);
-    lua_pushinteger(L, TASK_CREATE);
-    lua_setfield(L, -2, "created");
-    lua_pushinteger(L, TASK_BAD_CREATE);
-    lua_setfield(L, -2, "create_failed");
-    lua_pushinteger(L, TASK_EXIT);
-    lua_setfield(L, -2, "exited");
-    lua_pushinteger(L, TASK_FAILURE);
-    lua_setfield(L, -2, "failed");
-    lua_pushinteger(L, TASK_CANCEL);
-    lua_setfield(L, -2, "cancelled");
-    lua_setfield(L, -2, "announce");
-
+    // Add access to LuaJIT dumper as it has an extra parameter.
     lua_getglobal(L, "string");
     lua_getfield(L, -1, "dump");
-    lua_pushcclosure(L, LUAFN_NAME(create_task), 1);
     lua_remove(L, -2);
-    lua_setfield(L, -2, "create_task");
+    STORECCLOSURE(create_task, 1, -2);
 
-    // Add metatable for timestamps to waitmsg() and from_now().
+
+    // Add metatable for timestamps to wait_message() and seconds_from_now().
     lua_newtable(L);
     lua_pushstring(L, "Private");
     lua_setfield(L, -2, "__metatable");
     lua_pushcfunction(L, LUAFN_NAME(timestamp_name));
     lua_setfield(L, -2, "__tostring");
     lua_pushvalue(L, -1);
-    lua_pushcclosure(L, LUAFN_NAME(wait_message), 1);
-    lua_setfield(L, -3, "wait_message");
-    lua_pushcclosure(L, LUAFN_NAME(seconds_from_now), 1);
-    lua_setfield(L, -2, "seconds_from_now");
+    STORECCLOSURE(wait_message, 1, -3);
+    STORECCLOSURE(seconds_from_now, 1, -2);
+
+    // Users of the validate_task have the task name -> index cache
+    // as an upvalue.
+    lua_newtable(L);
+    lua_pushvalue(L, -1);
+    STORECCLOSURE(lookup_task, 1, -3);
+    lua_pushvalue(L, -1);
+    STORECCLOSURE(change_flag, 1, -3);
+    lua_pushvalue(L, -1);
+    STORECCLOSURE(interrupt_task, 1, -3);
+    lua_pushvalue(L, -1);
+    STORECCLOSURE(cancel_task, 1, -3);
+    lua_pushvalue(L, -1);
+    STORECCLOSURE(send_message, 1, -3);
+    STORECCLOSURE(send_message_with_type, 1, -2);
+
+    /*************/
+    /* CONSTANTS */
+    /*************/
+
+    // Add task announcements.
+    lua_pushinteger(L, TASK_BAD_CREATE);
+    lua_setfield(L, -2, "task_create_failed");
+    lua_pushinteger(L, TASK_CREATE);
+    lua_setfield(L, -2, "task_created");
+    lua_pushinteger(L, TASK_EXIT);
+    lua_setfield(L, -2, "task_exited");
+    lua_pushinteger(L, TASK_FAILURE);
+    lua_setfield(L, -2, "task_failed");
+    lua_pushinteger(L, TASK_CANCEL);
+    lua_setfield(L, -2, "task_cancelled");
+
+#ifdef __linux__
+    // Add schuduler types.
+    lua_pushinteger(L, SCHED_RR);
+    lua_setfield(L, -2, "sched_rr");
+    lua_pushinteger(L, SCHED_FIFO);
+    lua_setfield(L, -2, "sched_fifo");
+    lua_pushinteger(L, SCHED_IDLE);
+    lua_setfield(L, -2, "sched_idle");
+    lua_pushinteger(L, SCHED_BATCH);
+    lua_setfield(L, -2, "sched_batch");
+    lua_pushinteger(L, SCHED_OTHER);
+    lua_setfield(L, -2, "sched_other");
+#endif
 
     return 1;
 }
