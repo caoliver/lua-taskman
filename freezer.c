@@ -49,6 +49,13 @@
 #error You figure out what to do here for swapping
 #endif
 
+void show_stack(lua_State *L)
+{
+    printf("TOP IS %d\n", lua_gettop(L));
+    for (int i = lua_gettop(L); i > 0; i--)
+        printf("\t%d:\t%s\n", i, lua_typename(L, lua_type(L, i)));
+}
+
 // Do you want to start the serialization with a magic cookie?
 // #define MAGIC_COOKIE { 'L', 'F', 'R', 'Z' }
 
@@ -820,8 +827,11 @@ LUALIB_API int luaopen_freezer(lua_State *L)
     // the overhead of the callout is minor.
     lua_getglobal(L, "string");
     lua_getfield(L, -1, "dump");
-    lua_pushcclosure(L, freezer_freeze, 1);
     lua_remove(L, -2);
+    lua_pushvalue(L, -1);
+    lua_pushcclosure(L, clone, 1);
+    lua_setfield(L, -3, "clone");
+    lua_pushcclosure(L, freezer_freeze, 1);
     lua_pushvalue(L, -1);
     lua_setfield(L, -3, "freeze");
     lua_setfield(L, -2, "encode");
@@ -829,8 +839,6 @@ LUALIB_API int luaopen_freezer(lua_State *L)
     lua_pushvalue(L, -1);
     lua_setfield(L, -3, "thaw");
     lua_setfield(L, -2, "decode");
-    lua_pushcfunction(L, clone);
-    lua_setfield(L, -2, "clone");
 
     return 1;
 }
