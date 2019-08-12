@@ -749,40 +749,31 @@ static int initialize(lua_State *L,
     return pthread_create(&housekeeper_thread, NULL, &housekeeper, NULL);
 }
 
-LUAFN(initialize)
+/******************************/
+/* Internal utility functions */
+/******************************/
+
+LUAFN(timestamp_name)
 {
-    unsigned int task_limit = 0;
-    size_t control_channel_size = 0;
-    size_t main_incoming_channel_size = 0;
-
-    if (lua_istable(L, 1)) {
-	lua_settop(L, 1);
-	lua_getfield(L, 1, "task_limit");
-	task_limit = lua_tonumber(L, -1);
-	lua_getfield(L, 1, "control_channel_bytes");
-	control_channel_size = lua_tonumber(L, -1);
-	lua_getfield(L, 1, "main_channel_bytes");
-	main_incoming_channel_size = lua_tonumber(L, -1);
-	lua_settop(L, 0);
-    }
-
-    lua_pushboolean(L, initialize(L,
-				  task_limit,
-				  control_channel_size,
-				  main_incoming_channel_size));
-    return 0;
+    lua_pushfstring(L, "timestamp (%p)", lua_topointer(L, 1));
+    return 1;
 }
 
-LUAFN(create_task)
+LUAFN(seconds_from_now)
 {
-    ASSURE_INITIALIZED;
-    lua_settop(L, 1);
-    luaL_checktype(L, 1, LUA_TTABLE);
-    freezer_freeze(L);
-    size_t size = lua_objlen(L, -1);
-    if (send_ctl_msg(CREATE_TASK, lua_tostring(L, -1), size))
-	return 0;
-    return wait_for_reply(L);
+    double interval = lua_tonumber(L, 1);
+    if (interval < 0)
+	interval = 0;
+    struct timespec *ts;
+    ts = lua_newuserdata(L, sizeof(*ts));
+    clock_gettime(CLOCK_REALTIME, ts);
+    interval += ts->tv_sec + (double)1E-9*ts->tv_nsec;
+    ts->tv_sec = interval;
+    ts->tv_nsec = 1E9*(interval - ts->tv_sec);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_setmetatable(L, -2);
+    lua_replace(L, 1);
+    return 1;
 }
 
 struct task_cache_entry {
@@ -837,15 +828,69 @@ int validate_task(lua_State *L, int ix)
     return lookup_task(L, luaL_checkstring(L, ix));
 }
 
-LUAFN(lookup_task)
+static int getmsg(lua_State *L)
 {
-    TASK_FAIL_IF_UNINITIALISED;
-    int task_ix = validate_task(L, 1);
-    if (task_ix < 0)
+    struct task *task = &tasks[my_index];
+    struct message *msg;
+
+    if (cb_occupied(&task->incoming_queue) == 0)
 	return 0;
-    lua_pushinteger(L, task_ix);
-    lua_pushinteger(L, tasks[task_ix].nonce);
-    return 2;
+    msg = (void *)(cb_head(&task->incoming_queue) + task->incoming_store);
+    uint32_t msgmax = cb_occupied(&task->incoming_queue);
+    if (msgmax < sizeof(struct message)) {
+	errx(1, bad_msg, "client");
+    }
+    int sender = msg->sender;
+    struct task *sender_task = &tasks[sender];
+    size_t size = msg->size;
+    lua_pushlstring(L, (char *)msg->payload, size);
+    lua_pushinteger(L, msg->type);
+    int sender_nonce = msg->nonce;
+    cb_release(&task->incoming_queue, ALIGN(sizeof(struct message)+size));
+    int retcnt = 4;
+    if (sender_task->nonce == 0 ||
+	sender_task->nonce == sender_nonce) {
+	// This gets swapped, so be sure we use the same one both times.
+	uint32_t *current_in_use = task->name_in_use;
+	__atomic_add_fetch(current_in_use, 1, __ATOMIC_SEQ_CST);
+	if (sender_task->name) {
+	    lua_pushstring(L, sender_task->name);
+	    retcnt++;
+	}
+	__atomic_sub_fetch(current_in_use, 1, __ATOMIC_SEQ_CST);
+    }
+    lua_pushinteger(L, sender);
+    lua_pushinteger(L, sender_task->nonce);
+    return retcnt;
+}
+
+
+/****************************************/
+/* Explicit initialization and shutdown */
+/****************************************/
+
+LUAFN(initialize)
+{
+    unsigned int task_limit = 0;
+    size_t control_channel_size = 0;
+    size_t main_incoming_channel_size = 0;
+
+    if (lua_istable(L, 1)) {
+	lua_settop(L, 1);
+	lua_getfield(L, 1, "task_limit");
+	task_limit = lua_tonumber(L, -1);
+	lua_getfield(L, 1, "control_channel_bytes");
+	control_channel_size = lua_tonumber(L, -1);
+	lua_getfield(L, 1, "main_channel_bytes");
+	main_incoming_channel_size = lua_tonumber(L, -1);
+	lua_settop(L, 0);
+    }
+
+    lua_pushboolean(L, initialize(L,
+				  task_limit,
+				  control_channel_size,
+				  main_incoming_channel_size));
+    return 0;
 }
 
 LUAFN(shutdown)
@@ -864,55 +909,43 @@ LUAFN(shutdown)
     return 0;
 }
 
-LUAFN(status)
-{
-    if (!initialized)
-	puts("Inactive");
-    else if (my_index == 0)
-	send_ctl_msg(SHOW_STATUS, lua_toboolean(L,1) ? "\1" : "\0", 1);
-    return 0;
-}
+/*******************/
+/* Task management */
+/*******************/
 
-static char *badflag = "Invalid flag %d";
-
-LUAFN(change_flag)
+LUAFN(create_task)
 {
     ASSURE_INITIALIZED;
-    int flag = luaL_checkinteger(L, 1);
-    if (flag < 0 || flag >= MAX_FLAG)
-	luaL_error(L, badflag, flag);
-    int task_ix = validate_task(L, 3);
+    lua_settop(L, 1);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    freezer_freeze(L);
+    size_t size = lua_objlen(L, -1);
+    if (send_ctl_msg(CREATE_TASK, lua_tostring(L, -1), size))
+	return 0;
+    return wait_for_reply(L);
+}
+
+LUAFN(get_my_name)
+{
+    ASSURE_INITIALIZED;
+    if (tasks[my_index].name)
+	lua_pushstring(L, tasks[my_index].name);
+    else
+	lua_pushnil(L);
+    lua_pushinteger(L, my_index);
+    lua_pushinteger(L, tasks[my_index].nonce);
+    return 3;
+}
+
+LUAFN(lookup_task)
+{
+    TASK_FAIL_IF_UNINITIALISED;
+    int task_ix = validate_task(L, 1);
     if (task_ix < 0)
 	return 0;
-     tasks[task_ix].control_flags =
-	 (tasks[task_ix].control_flags & ~(1<<flag) |
-	  lua_toboolean(L, 2)<<flag);
     lua_pushinteger(L, task_ix);
-    return 1;
-}
-
-LUAFN(broadcast_flag)
-{
-    ASSURE_INITIALIZED;
-    int flag = luaL_checkinteger(L, 1);
-    if (flag < 0 || flag > MAX_FLAG)
-	luaL_error(L, badflag, flag);
-    for (int i = 0; i < num_tasks; i++)
-	if (tasks[i].nonce != 0)
-	    tasks[i].control_flags =
-		(tasks[i].control_flags & ~(1<<flag) |
-		 lua_toboolean(L, 2)<<flag);
-    return 0;
-}
-
-LUAFN(flag_is_true)
-{
-    ASSURE_INITIALIZED;
-    int flag = luaL_checkinteger(L, 1);
-    if (flag < 0 || flag > MAX_FLAG)
-	luaL_error(L, badflag, flag);
-    lua_pushboolean(L, tasks[my_index].control_flags & 1<<flag);
-    return 1;
+    lua_pushinteger(L, tasks[task_ix].nonce);
+    return 2;
 }
 
 LUAFN(interrupt_task)
@@ -961,6 +994,8 @@ LUAFN(cancel_all)
 
 LUAFN(set_cancel)
 {
+    if (!initialized)
+	return 0;
     int oldstate = -1, oldtype = -1;
     if (initialized && my_index != 0) {
 	if (lua_type(L, 1) != LUA_TBOOLEAN && !lua_isnoneornil(L, 1))
@@ -981,77 +1016,74 @@ LUAFN(set_cancel)
     return 2;
 }
 
-static int getmsg(lua_State *L)
-{
-    struct task *task = &tasks[my_index];
-    struct message *msg;
+/*********/
+/* Flags */
+/*********/
 
-    if (cb_occupied(&task->incoming_queue) == 0)
+static char *badflag = "Invalid flag %d";
+
+LUAFN(change_flag)
+{
+    ASSURE_INITIALIZED;
+    int flag = luaL_checkinteger(L, 1);
+    if (flag < 0 || flag >= MAX_FLAG)
+	luaL_error(L, badflag, flag);
+    int task_ix = validate_task(L, 3);
+    if (task_ix < 0)
 	return 0;
-    msg = (void *)(cb_head(&task->incoming_queue) + task->incoming_store);
-    uint32_t msgmax = cb_occupied(&task->incoming_queue);
-    if (msgmax < sizeof(struct message)) {
-	errx(1, bad_msg, "client");
-    }
-    int sender = msg->sender;
-    struct task *sender_task = &tasks[sender];
-    size_t size = msg->size;
-    lua_pushlstring(L, (char *)msg->payload, size);
-    lua_pushinteger(L, msg->type);
-    int sender_nonce = msg->nonce;
-    cb_release(&task->incoming_queue, ALIGN(sizeof(struct message)+size));
-    int retcnt = 4;
-    if (sender_task->nonce == 0 ||
-	sender_task->nonce == sender_nonce) {
-	// This gets swapped, so be sure we use the same one both times.
-	uint32_t *current_in_use = task->name_in_use;
-	__atomic_add_fetch(current_in_use, 1, __ATOMIC_SEQ_CST);
-	if (sender_task->name) {
-	    lua_pushstring(L, sender_task->name);
-	    retcnt++;
-	}
-	__atomic_sub_fetch(current_in_use, 1, __ATOMIC_SEQ_CST);
-    }
-    lua_pushinteger(L, sender);
-    lua_pushinteger(L, sender_task->nonce);
-    return retcnt;
+     tasks[task_ix].control_flags =
+	 (tasks[task_ix].control_flags & ~(1<<flag) |
+	  lua_toboolean(L, 2)<<flag);
+    lua_pushinteger(L, task_ix);
+    return 1;
 }
+
+LUAFN(broadcast_flag)
+{
+    if (initialized) {
+	int flag = luaL_checkinteger(L, 1);
+	if (flag < 0 || flag > MAX_FLAG)
+	    luaL_error(L, badflag, flag);
+	for (int i = 0; i < num_tasks; i++)
+	    if (tasks[i].nonce != 0)
+		tasks[i].control_flags =
+		    (tasks[i].control_flags & ~(1<<flag) |
+		     lua_toboolean(L, 2)<<flag);
+    }
+    return 0;
+}
+
+LUAFN(flag_is_true)
+{
+    bool result=false;
+    if (initialized) {
+	int flag = luaL_checkinteger(L, 1);
+	if (flag < 0 || flag > MAX_FLAG)
+	    luaL_error(L, badflag, flag);
+	result = tasks[my_index].control_flags & 1<<flag;
+    }
+    lua_pushboolean(L, result);
+    return 1;
+}
+
+/************/
+/* Messages */
+/************/
 
 LUAFN(get_message)
 {
-    ASSURE_INITIALIZED;
+    if (!initialized)
+	return 0;
     int rc = getmsg(L);
     if (rc > 0)
 	sem_wait(&tasks[my_index].incoming_sem);
     return rc;
 }
 
-LUAFN(timestamp_name)
-{
-    lua_pushfstring(L, "timestamp (%p)", lua_topointer(L, 1));
-    return 1;
-}
-
-LUAFN(seconds_from_now)
-{
-    double interval = lua_tonumber(L, 1);
-    if (interval < 0)
-	interval = 0;
-    struct timespec *ts;
-    ts = lua_newuserdata(L, sizeof(*ts));
-    clock_gettime(CLOCK_REALTIME, ts);
-    interval += ts->tv_sec + (double)1E-9*ts->tv_nsec;
-    ts->tv_sec = interval;
-    ts->tv_nsec = 1E9*(interval - ts->tv_sec);
-    lua_pushvalue(L, lua_upvalueindex(1));
-    lua_setmetatable(L, -2);
-    lua_replace(L, 1);
-    return 1;
-}
-
 LUAFN(wait_message)
 {
-    ASSURE_INITIALIZED;
+    if (!initialized)
+	return 0;
     if (lua_isnone(L, 1))
 	sem_wait(&tasks[my_index].incoming_sem);
     else {
@@ -1152,6 +1184,10 @@ LUAFN(set_subscriptions)
     return 0;
 }
 
+/************************/
+/* Scheduler parameters */
+/************************/
+
 LUAFN(set_priority)
 {
 #ifdef __linux__
@@ -1195,6 +1231,19 @@ LUAFN(set_affinity)
 #endif
 }
 
+/******************/
+/* Status display */
+/******************/
+
+LUAFN(status)
+{
+    if (!initialized)
+	fprintf(stderr, "Inactive\n");
+    else if (my_index == 0)
+	send_ctl_msg(SHOW_STATUS, lua_toboolean(L,1) ? "\1" : "\0", 1);
+    return 0;
+}
+
 LUAFN(set_display_create_errors)
 {
     display_create_errors = lua_toboolean(L, 1);
@@ -1208,21 +1257,22 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     /********************/
 
     const luaL_Reg funcptrs[] = {
-	FN_ENTRY(initialize),
 	FN_ENTRY(broadcast_flag),
-	FN_ENTRY(interrupt_all),
-	FN_ENTRY(cancel_all),
-	FN_ENTRY(set_cancel),
-	FN_ENTRY(flag_is_true),
-	FN_ENTRY(shutdown),
 	FN_ENTRY(broadcast_message),
+	FN_ENTRY(cancel_all),
+	FN_ENTRY(flag_is_true),
+	FN_ENTRY(initialize),
+	FN_ENTRY(interrupt_all),
+	FN_ENTRY(get_message),
+	FN_ENTRY(get_my_name),
+	FN_ENTRY(set_affinity),
+	FN_ENTRY(set_cancel),
+	FN_ENTRY(set_display_create_errors),
+	FN_ENTRY(set_priority), // Requires special privs.
 	FN_ENTRY(set_reception),
 	FN_ENTRY(set_subscriptions),
-	FN_ENTRY(get_message),
-	FN_ENTRY(set_display_create_errors),
+	FN_ENTRY(shutdown),
 	FN_ENTRY(status),
-	FN_ENTRY(set_priority), // Requires special privs.
-	FN_ENTRY(set_affinity),
 	{ NULL, NULL }
     };
 
@@ -1250,20 +1300,20 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     lua_pushcfunction(L, LUAFN_NAME(timestamp_name));
     lua_setfield(L, -2, "__tostring");
     lua_pushvalue(L, -1);
-    STORECCLOSURE(wait_message, 1, -3);
-    STORECCLOSURE(seconds_from_now, 1, -2);
+    STORECCLOSURE(seconds_from_now, 1, -3);
+    STORECCLOSURE(wait_message, 1, -2);
 
     // Users of the validate_task have the task name -> index cache
     // as an upvalue.
     lua_newtable(L);
     lua_pushvalue(L, -1);
-    STORECCLOSURE(lookup_task, 1, -3);
+    STORECCLOSURE(cancel_task, 1, -3);
     lua_pushvalue(L, -1);
     STORECCLOSURE(change_flag, 1, -3);
     lua_pushvalue(L, -1);
     STORECCLOSURE(interrupt_task, 1, -3);
     lua_pushvalue(L, -1);
-    STORECCLOSURE(cancel_task, 1, -3);
+    STORECCLOSURE(lookup_task, 1, -3);
     lua_pushvalue(L, -1);
     STORECCLOSURE(send_message, 1, -3);
     STORECCLOSURE(send_message_with_type, 1, -2);
