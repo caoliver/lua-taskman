@@ -1020,11 +1020,20 @@ LUAFN(set_cancel)
 				   : PTHREAD_CANCEL_DISABLE, &oldstate);
 	if (!lua_isnoneornil(L,2))
 	    pthread_setcanceltype(lua_toboolean(L, 2) ?
-				  PTHREAD_CANCEL_ASYNCHRONOUS
-				  : PTHREAD_CANCEL_DEFERRED, &oldtype);
+				  PTHREAD_CANCEL_DEFERRED
+				  : PTHREAD_CANCEL_ASYNCHRONOUS, &oldtype);
     }
-    lua_pushinteger(L, oldstate);
-    lua_pushinteger(L, oldtype);
+
+    if (oldstate == -1)
+	lua_pushnil(L);
+    else
+	lua_pushboolean(L, oldstate = PTHREAD_CANCEL_ENABLE);
+
+    if (oldtype == -1)
+	lua_pushnil(L);
+    else
+	lua_pushboolean(L, oldstate = PTHREAD_CANCEL_DEFERRED);
+
     return 2;
 }
 
