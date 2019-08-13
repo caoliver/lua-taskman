@@ -1,19 +1,37 @@
-CFLAGS+=-fPIC -I /usr/local/include/luajit-2.0 -I/usr/local/include
+PREFIX=/usr/local
+LIBPATH=$(PREFIX)/lib/lua/5.1
+LUAPATH=$(PREFIX)/share/lua/5.1
+INCPATH=$(PREFIX)/include/lua/5.1
+CFLAGS+=-fPIC -I$(INCPATH) -I/usr/local/include -pthread
 CFLAGS+=-Wall -Wno-parentheses -fomit-frame-pointer -std=c99 -O2
 CFLAGS+=-D_POSIX_C_SOURCE=200112L
 CFLAGS+=-mtune=generic
 #CFLAGS+=-march=native -mfloat-abi=hard
-LDFLAGS+=-lluajit -ldl -pthread -lm
+LDFLAGS+=-lluajit -ldl -shared -pthread -lm -Wl,-rpath=$(LIBPATH)
+VER=0.0
 
-all: taskman.so
+.PHONY: all clean tests install
 
-globals.h:
+all: taskman.so tests
+	ldconfig -N -l *.so
 
-taskman.so: taskman.o mmaputil.so /usr/local/lib/lua/5.1/freezer.so
-	gcc -Wl,-rpath='$$ORIGIN' -shared $(LDFLAGS) -o $@ $^
+tests: freezer.so
+	lua fz-test.lua
 
-%.so: %.o
-	gcc -shared $(LDFLAGS) -o $@ $<
+freezer.so: freezer.o 
+	gcc $(LDFLAGS) -Wl,-soname,lua-freezer.so.$(VER) -o $@ $^
+
+taskman.so: taskman.o mmaputil.so freezer.so
+	gcc -Wl,-soname,lua-taskman.so.$(VER) $(LDFLAGS) -o $@ $^
+
+mmaputil.so: mmaputil.o
+	gcc $(LDFLAGS) -Wl,-soname,lua-mmaputil.so.$(VER) -o $@ $^
+
+install: freezer.so taskman.so mmaputil.so ffi+.lua
+	install -m 0755 *.so $(LIBPATH)
+	install -m 0644 ffi+.lua $(LUAPATH)
+	install -m 0644 mmaputil.h cbuf.h $(INCPATH)
+	(cd $(LIBPATH) && ldconfig -N -l freezer.so taskman.so mmaputil.so)
 
 clean:
-	find -name \*.o -delete -o -name \*.so -delete
+	find \( -name \*.o -o -name \*.so -o -name \*.so.$(VER) \) -delete
