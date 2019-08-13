@@ -1,0 +1,127 @@
+Fast and compact serialization for Lua
+==========================
+
+local freezer = require "freezer"
+
+Provides:
+---------
+
+* s = freezer.freeze(v[, constants], ...) - serializes a value to a byte stream
+* t = freezer.thaw(s[, constants])      - deserializes a byte stream to a value
+* t = freezer.clone(orig[, constants])  - deep clone a value (deep for tables
+                                          and functions)
+
+
+Features:
+---------
+
+Serializes tables, which may contain cycles, Lua functions with upvalues and
+basic data types.
+
+All functions take an optional constants table which, if encountered during
+serialization, are simply referenced from the constants table passed during
+deserialization. For example:
+
+    local orig = { answer = 42, print = print }
+    local pack = freezer.freeze(orig, { print })
+    local copy = freezer.thaw(pack, { print })
+    assert(copy.print == print)
+
+The freezer.freeze function takes an optional third and forth boolean
+argument.  When the third argument is true all duplicates of a given string
+are stored as brief references.  If built for LuaJIT, the fourth argument
+enables debug stripping, otherwise it is ignored.  Both of these default to
+false.
+
+N.B. string deduplication requires strings to be checked against a hash table
+which will slow down the serialization.  Nontheless, this may be useful for
+structures with lots of repeated strings or containing closures with
+identical bytecode.
+
+For the sake of compatibility with other serialization libraries, encode
+is a synonym for freeze, and decode is a synonym for thaw.
+
+Freezer provides Lua C API style calls as:
+
+    freezer_freeze(lua_State *L);
+    freezer_thaw(lua_State *L);
+
+There is no C API for clone.
+
+N.B. freeze_freezer expects to get the string.dump function via an upvalue.
+If you will serialize functions, you will need something like the following:
+
+    lua_getglobal(L, "string");
+    lua_getfield(L, -1, "dump");
+    lua_pushcclosure(L, my_freeze_func, 1);
+
+Complex value handling with a user provided serialization function:
+-----
+
+By itself, freezer can serialize simple values: nil, booleans, numbers,
+strings, functions, closures, and tables which don't contain metatables.
+The caller may provide a helper function as the fifth argument to
+freezer.freeze.  This function takes the data to be serialized at its
+only argument and returns one of three things:
+
+    a) a lua false value.  This means the function doesn't handle this
+    data, and the serializer should stop with an error.
+
+    b) a non-function lua true value followed optionally by a value to
+    serialize in place of the offending one.  If no value is provided,
+    nil is substituted.
+
+    c) a constructor function taking no arguments to be evaluated
+    when freezer.thaw is invoked which returns a value to use in place
+    of the offending one in the restored data.
+
+This is useful for serializing both userdata and for use with object-oriented
+Lua, since metatables are not serialized.
+
+For example:
+
+    local Point = { }
+    function Point:new(x, y)
+       self.__index = self
+       return setmetatable({ x = x, y = y }, self)
+    end
+    function Point:move(x, y)
+       self.x = x
+       self.y = y
+    end
+    function Point:__freeze()
+       local x = self.x
+       local y = self.y
+       return function()
+          -- do NOT refer to self in this scope
+          return setmetatable({ x = x, y = y }, Point)
+       end
+    end
+
+To serialize an array of points:
+
+    point_array={Point.new(4,5), Point.new(-9,4), Point.new(1,-17)}
+
+    freezer.freeze(point_array, {}, nil, nil,
+                   function (point) return point:__freeze() end
+
+The above shows a way to store an "instance" of Point (if you're thinking in
+OO terms). In this case `Point` itself will be included in the frozen chunk
+because it's referenced as an upvalue of the returned closure.
+
+The `__freeze` hook may *NOT* refer to the receiver (i.e. `self` in the
+example) because this will cause deep recursion when upvalues are serialized.
+
+Note that in a real application, the user serializer would need to distinguish
+to sorts of data by type in order to determine appropriate handling.
+
+Also, if the substitution or upvalues of the constructor function refer
+to previously seen special values, the produced serialization will be
+corrupt, and thaw will produce an error if fed it.
+
+Limitations: ------------
+
+Serialized code may not be portable.
+
+Credits: test.lua and most of this document come from Richard Hundt's
+work in lua-marshal.
