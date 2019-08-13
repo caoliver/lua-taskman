@@ -14,14 +14,14 @@ function kill_some(i)
       -- Cancel everyone but myself and the main task.
       t.cancel_all()
       
-      -- Tell main we're done...
-      t.send_message('done', ':main:')
-      
       -- but wait a minute.  Let's be uncivil and busy loop.
       while true do end
-      
+   elseif i==4 then
+      f.C.usleep(400000)
+      t.send_message('done', ':main:')
+      f.C.pause()
    elseif i~=5 and i~=1 then
-      -- jobs 1 and 5 didn't really want to stick around; we'll just sleep.
+      -- Jobs 1 and 5 didn't really want to stick around; we'll just sleep.
       f.C.pause();
    end
 end
@@ -32,19 +32,25 @@ t=require 'taskman'
 t.set_subscriptions{child_task_exits=true}
 
 -- Pass the value of i as the first argument to our function.
+local four
 for i=1,6 do
-   t.create_task{program=kill_some, show_errors=true, i}
+   local task_id = t.create_task{program=kill_some, show_errors=true, i}
    -- Wait for the task's startup message.
    t.wait_message()
+   if i == 4 then
+      -- Make the fourth task immune from
+      -- cancellation/interruption except by us.
+      t.set_immunity(true, task_id)
+   end
 end
 
 -- Show who's running.
 t.status()
 
--- Catch the first five exits.
+-- Catch the first four exits.
 -- Should take far less than a second.
 ts=t.seconds_from_now(1)
-for i=1,5 do t.wait_message(ts) end
+for i=1,4 do t.wait_message(ts) end
 
 -- Ignore child exit messages
 t.set_subscriptions{child_task_exits=false}
@@ -52,8 +58,8 @@ t.set_subscriptions{child_task_exits=false}
 -- Show who's *still* running.
 t.status()
 
--- Wait for task 3 to tell us he's finished.
-local _,_,s=t.wait_message()
-
--- Shutdown will kill off anyone (task 3) loitering.
+-- Wait for task 4 to tell us he's finished.
+t.wait_message()
+-- Shutdown will kill off anyone (task 3 and task 4) loitering.
+print 'Farewell'
 t.shutdown()

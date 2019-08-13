@@ -75,6 +75,12 @@ char *announcements[] = {
 #define RECEIVE_CREATE_FAILURES (16<<SUBSCRIBE_SHIFT)
     "create_failures",
     NULL};
+// Unused bits: 32 and 64
+
+
+#define SUBSCRIBE_MASK (127<<SUBSCRIBE_SHIFT)
+
+#define IMMUNITY (1<<31)
 
 
 // Align message lengths on double words.
@@ -951,11 +957,12 @@ LUAFN(lookup_task)
 LUAFN(interrupt_task)
 {
     TASK_FAIL_IF_UNINITIALISED;
-    int signo = 0;
-    if (!lua_isnil(L, 1))
-	signo = lua_toboolean(L, 1) ? 12 : 10;
+    int signo = lua_toboolean(L, 1) ? 12 : 10;
     int task_ix = validate_task(L, 2);
-    if (task_ix > 0 && pthread_kill(tasks[task_ix].thread, signo) != 0)
+    if (task_ix > 0 && tasks[task_ix].nonce != 0 &&
+	(~tasks[task_ix].control_flags & IMMUNITY || my_index == 0))
+	pthread_kill(tasks[task_ix].thread, signo);
+    else
 	task_ix = -1;
     lua_pushinteger(L, task_ix);
     return 1;
@@ -964,11 +971,10 @@ LUAFN(interrupt_task)
 LUAFN(interrupt_all)
 {
     TASK_FAIL_IF_UNINITIALISED;
-    int signo = 0;
-    if (!lua_isnil(L, 1))
-	signo = lua_toboolean(L, 1) ? 12 : 10;
+    int signo = lua_toboolean(L, 1) ? 12 : 10;
     for (int i = 1; i < num_tasks; i++)
-	if (tasks[i].nonce != 0 && i != my_index)
+	if (tasks[i].nonce != 0 && i != my_index &&
+	    (~tasks[i].control_flags & IMMUNITY || my_index == 0))
 	    pthread_kill(tasks[i].thread, signo);
     return 0;
 }
@@ -977,8 +983,11 @@ LUAFN(cancel_task)
 {
     TASK_FAIL_IF_UNINITIALISED;
     int task_ix = validate_task(L, 1);
-    if (task_ix > 0)
+    if (task_ix > 0 && tasks[task_ix].nonce != 0 &&
+	(~tasks[task_ix].control_flags & IMMUNITY || my_index == 0))
 	pthread_cancel(tasks[task_ix].thread);
+    else
+	task_ix = -1;
     lua_pushinteger(L, task_ix);
     return 1;
 }
@@ -987,7 +996,8 @@ LUAFN(cancel_all)
 {
     TASK_FAIL_IF_UNINITIALISED;
     for (int i = 1; i < num_tasks; i++)
-	if (tasks[i].nonce != 0 && i != my_index)
+	if (tasks[i].nonce != 0 && i != my_index &&
+	    (~tasks[i].control_flags & IMMUNITY || my_index == 0))
 	    pthread_cancel(tasks[i].thread);
     return 0;
 }
@@ -1016,6 +1026,7 @@ LUAFN(set_cancel)
     return 2;
 }
 
+
 /*********/
 /* Flags */
 /*********/
@@ -1031,9 +1042,11 @@ LUAFN(change_flag)
     int task_ix = validate_task(L, 3);
     if (task_ix < 0)
 	return 0;
-     tasks[task_ix].control_flags =
-	 (tasks[task_ix].control_flags & ~(1<<flag) |
-	  lua_toboolean(L, 2)<<flag);
+    __atomic_and_fetch(&tasks[task_ix].control_flags, ~(1<<flag),
+		       __ATOMIC_SEQ_CST);
+    __atomic_or_fetch(&tasks[task_ix].control_flags,
+		      lua_toboolean(L, 2)<<flag,
+		      __ATOMIC_SEQ_CST);
     lua_pushinteger(L, task_ix);
     return 1;
 }
@@ -1045,10 +1058,13 @@ LUAFN(broadcast_flag)
 	if (flag < 0 || flag > MAX_FLAG)
 	    luaL_error(L, badflag, flag);
 	for (int i = 0; i < num_tasks; i++)
-	    if (tasks[i].nonce != 0)
-		tasks[i].control_flags =
-		    (tasks[i].control_flags & ~(1<<flag) |
-		     lua_toboolean(L, 2)<<flag);
+	    if (tasks[i].nonce != 0) {
+		__atomic_and_fetch(&tasks[i].control_flags, ~(1<<flag),
+				   __ATOMIC_SEQ_CST);
+		__atomic_or_fetch(&tasks[i].control_flags,
+				  lua_toboolean(L, 2)<<flag,
+				  __ATOMIC_SEQ_CST);
+	    }
     }
     return 0;
 }
@@ -1065,6 +1081,28 @@ LUAFN(flag_is_true)
     lua_pushboolean(L, result);
     return 1;
 }
+
+LUAFN(set_immunity)
+{
+    if (!initialized)
+	return 0;
+    int task_ix = -1;
+    if (my_index == 0) {
+	task_ix = validate_task(L, 2);
+    } else if (tasks[0].control_flags & IMMUNITY)
+	task_ix = my_index;
+	
+    if (task_ix >= 0) {
+	__atomic_and_fetch(&tasks[task_ix].control_flags, ~IMMUNITY,
+			   __ATOMIC_SEQ_CST);
+	__atomic_or_fetch(&tasks[task_ix].control_flags,
+			  lua_toboolean(L, 1) ? IMMUNITY : 0,
+			  __ATOMIC_SEQ_CST);
+    }
+    lua_pushinteger(L, task_ix);
+    return 1;
+}
+
 
 /************/
 /* Messages */
@@ -1164,8 +1202,12 @@ LUAFN(set_reception)
     int mask = lua_tointeger(L, 1);
     if (mask < 0 || mask > 255)
 	luaL_error(L, "Bad broadcast mask");
-    tasks[my_index].control_flags &= ~(255<<BROADCAST_SHIFT);
-    tasks[my_index].control_flags |= mask<<BROADCAST_SHIFT;
+    __atomic_and_fetch(&tasks[my_index].control_flags,
+		       ~(255<<BROADCAST_SHIFT),
+		       __ATOMIC_SEQ_CST);
+    __atomic_or_fetch(&tasks[my_index].control_flags,
+		      mask<<BROADCAST_SHIFT,
+		       __ATOMIC_SEQ_CST);
     return 0;
 }
 
@@ -1173,14 +1215,16 @@ LUAFN(set_subscriptions)
 {
     ASSURE_INITIALIZED;
     luaL_checktype(L, 1, LUA_TTABLE);
-    int flags = tasks[my_index].control_flags;
+    int flags = 0;
     for (int i=0; announcements[i]; i++) {
 	lua_getfield(L, 1, announcements[i]);
-	flags = (flags & ~(1<<SUBSCRIBE_SHIFT+i)) |
-	    (lua_isnil(L, -1) ? 0 : (1<<SUBSCRIBE_SHIFT+i));
+	flags |=  (lua_isnil(L, -1) ? 0 : (1<<SUBSCRIBE_SHIFT+i));
 	lua_pop(L, 1);
     }
-    tasks[my_index].control_flags = flags;
+    __atomic_and_fetch(&tasks[my_index].control_flags, ~SUBSCRIBE_MASK,
+		       __ATOMIC_SEQ_CST);
+    __atomic_or_fetch(&tasks[my_index].control_flags, flags,
+		      __ATOMIC_SEQ_CST);
     return 0;
 }
 
@@ -1268,6 +1312,7 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(set_affinity),
 	FN_ENTRY(set_cancel),
 	FN_ENTRY(set_display_create_errors),
+	FN_ENTRY(set_immunity),
 	FN_ENTRY(set_priority), // Requires special privs.
 	FN_ENTRY(set_reception),
 	FN_ENTRY(set_subscriptions),
