@@ -55,7 +55,7 @@ void show_stack(lua_State *L)
 #define TASK_BAD_CREATE 4097
 #define TASK_EXIT 4098
 #define TASK_FAILURE 4099
-#define TASK_CANCEL 40100
+#define TASK_CANCEL 4100
 
 #define MAX_FLAG 11
 #define MAX_MSG_TYPE 4095
