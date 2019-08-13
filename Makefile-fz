@@ -14,8 +14,8 @@ test: freezer.so
 all: freezer.so
 	lua test.lua
 
-%.so: %.o 
-	gcc -shared $(LDFLAGS) -o $@ $<
+freezer.so: freezer.o 
+	gcc -shared -pthread $(LDFLAGS) -Wl,-soname,lua-freezer-0.0.so -o $@ $<
 
 clean:
 	find -name \*.o -delete -o -name \*.so -delete
