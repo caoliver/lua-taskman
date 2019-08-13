@@ -13,7 +13,6 @@ VER=0.0
 .PHONY: all clean tests install
 
 all: taskman.so tests
-	ldconfig -N -l *.so
 
 tests: freezer.so
 	lua fz-test.lua

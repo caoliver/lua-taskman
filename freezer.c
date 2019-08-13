@@ -49,13 +49,6 @@
 #error You figure out what to do here for swapping
 #endif
 
-void show_stack(lua_State *L)
-{
-    printf("TOP IS %d\n", lua_gettop(L));
-    for (int i = lua_gettop(L); i > 0; i--)
-        printf("\t%d:\t%s\n", i, lua_typename(L, lua_type(L, i)));
-}
-
 // Do you want to start the serialization with a magic cookie?
 // #define MAGIC_COOKIE { 'L', 'F', 'R', 'Z' }
 
