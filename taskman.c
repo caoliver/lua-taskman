@@ -246,10 +246,10 @@ static int wait_for_reply(lua_State *L)
 // These need to be shared between new_thread and the cancellation handler.
 static __thread bool show_errors;
 static __thread bool show_exits;
-static __thread struct task *task;  // Will be shadowed later on.
 
 void cancellation_handler(void *dummy)
 {
+    struct task *task = &tasks[my_index];
     if (show_exits || show_errors)
 	if (task->name)
 	    fprintf(stderr, "Task %s has been cancelled\n", task->name);
@@ -283,7 +283,7 @@ static void *new_thread(void *luastate)
     //   2 - program description table
     //   1 - Traceback function
     my_index = lua_tointeger(L, -1);
-    task = &tasks[my_index];
+    struct task *task = &tasks[my_index];
     lua_pop(L, 1);
 
     // These aren't GCable.
@@ -959,7 +959,8 @@ LUAFN(interrupt_task)
     TASK_FAIL_IF_UNINITIALISED;
     int signo = lua_toboolean(L, 1) ? 12 : 10;
     int task_ix = validate_task(L, 2);
-    if (task_ix > 0 && tasks[task_ix].nonce != 0 &&
+    if (task_ix != my_index && task_ix > 0 &&
+	tasks[task_ix].nonce != 0 &&
 	(~tasks[task_ix].control_flags & IMMUNITY || my_index == 0))
 	pthread_kill(tasks[task_ix].thread, signo);
     else
@@ -983,7 +984,8 @@ LUAFN(cancel_task)
 {
     TASK_FAIL_IF_UNINITIALISED;
     int task_ix = validate_task(L, 1);
-    if (task_ix > 0 && tasks[task_ix].nonce != 0 &&
+    if (task_ix != my_index && task_ix > 0 &&
+	tasks[task_ix].nonce != 0 &&
 	(~tasks[task_ix].control_flags & IMMUNITY || my_index == 0))
 	pthread_cancel(tasks[task_ix].thread);
     else
