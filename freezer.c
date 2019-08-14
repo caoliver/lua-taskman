@@ -49,6 +49,9 @@
 #error You figure out what to do here for swapping
 #endif
 
+// Include for debugging.
+//#include "show_stack.h"
+
 // Do you want to start the serialization with a magic cookie?
 // #define MAGIC_COOKIE { 'L', 'F', 'R', 'Z' }
 
@@ -448,11 +451,19 @@ static void freeze_recursive(lua_State *L,
 		     catbuf, merge_dupl_strs, strip_debug);
     lua_pop(L, 1);
     return;
-bugout:
-    if (lua_type(L, index) == LUA_TTABLE)
-	luaL_error(L,
-		   "Table has a metatable, but no user serializer was given.");
-    luaL_error(L, "Can't serialize type %s", luaL_typename(L, index));
+
+bugout: {
+	const char *typename;
+
+	if (lua_type(L, index) == LUA_TTABLE)
+	    typename = "table+metatable";
+	else if (lua_iscfunction(L, index))
+	    typename = "C function";
+	else
+	    typename = luaL_typename(L, index);
+
+	luaL_error(L, "Can't serialize type: %s", typename);
+    }
 }
 
 int freezer_freeze(lua_State *L)
@@ -520,6 +531,12 @@ int freezer_freeze(lua_State *L)
 
     buf_pushresult(&catbuf);
     return 1;
+}
+
+int freezer_self_call(lua_State *L)
+{
+    lua_remove(L, 1);
+    return freezer_freeze(L);
 }
 
 static char *end_of_data = "Premature end of data in serialization";
@@ -816,11 +833,16 @@ LUALIB_API int luaopen_freezer(lua_State *L)
     // the same C function, so we build the table ourselves.
     lua_newtable(L);
 
-    // LuaJIT doesn't expose the strip parameter, and
-    // the overhead of the callout is minor.
+    // LuaJIT doesn't expose the strip parameter in the C API,
+    // and the overhead of the callout is minor.
     lua_getglobal(L, "string");
     lua_getfield(L, -1, "dump");
     lua_remove(L, -2);
+    lua_newtable(L);
+    lua_pushvalue(L, -2);
+    lua_pushcclosure(L, freezer_self_call, 1);
+    lua_setfield(L, -2, "__call");
+    lua_setmetatable(L, -3);
     lua_pushvalue(L, -1);
     lua_pushcclosure(L, clone, 1);
     lua_setfield(L, -3, "clone");

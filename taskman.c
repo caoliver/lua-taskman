@@ -16,15 +16,8 @@
 
 #include "lua_head.h"
 
-#if 0
-// Leave this here for feature debugging
-void show_stack(lua_State *L)
-{
-    printf("TOP IS %d\n", lua_gettop(L));
-    for (int i = lua_gettop(L); i > 0; i--)
-	printf("\t%d:\t%s\n", i, lua_typename(L, lua_type(L, i)));
-}
-#endif
+// Include for debugging.
+// #include "show_stack.h"
 
 #include "mmaputil.h"
 
@@ -286,7 +279,7 @@ static void *new_thread(void *luastate)
     struct task *task = &tasks[my_index];
     lua_pop(L, 1);
 
-    // These aren't GCable.
+    // Let everyone know this isn't GCable.
     __atomic_add_fetch(&task->queue_in_use, 1, __ATOMIC_SEQ_CST);
 
     // Set exit status printing as asked.
