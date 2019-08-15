@@ -12,13 +12,11 @@ VER=0.0
 
 .PHONY: all clean tests install
 
-all: taskman.so tests
-
-tests: freezer.so
-	lua fz-test.lua
+all: taskman.so freezer.so
 
 freezer.so: freezer.o 
 	gcc $(LDFLAGS) -Wl,-soname,lua-freezer.so.$(VER) -o $@ $^
+	lua fz-test.lua
 
 taskman.so: taskman.o mmaputil.so freezer.so
 	gcc -Wl,-soname,lua-taskman.so.$(VER) $(LDFLAGS) -o $@ $^
