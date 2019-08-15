@@ -371,10 +371,6 @@ static void freeze_recursive(lua_State *L,
 	    }
 	}
 	return;
-    case LUA_TUSERDATA:
-	if (use_or_make_ref(L, index, seen_object_count, catbuf))
-	    return;
-	break;
     case LUA_TFUNCTION:
 	if (!use_or_make_ref(L, index, seen_object_count, catbuf)) {
 	    if (lua_iscfunction(L, index))
@@ -417,9 +413,8 @@ static void freeze_recursive(lua_State *L,
 	}
 	return;
     default:
-	if (use_or_make_ref(L, index, seen_object_count, catbuf)) {
+	if (use_or_make_ref(L, index, seen_object_count, catbuf))
 	    return;
-	}
     }
 
     if (lua_isnil(L, USER_SERIALIZER_IDX))
