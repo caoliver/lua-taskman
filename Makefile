@@ -7,7 +7,7 @@ CFLAGS+=-Wall -Wno-parentheses -fomit-frame-pointer -std=c99 -O2
 CFLAGS+=-D_POSIX_C_SOURCE=200112L
 CFLAGS+=-mtune=generic
 #CFLAGS+=-march=native -mfloat-abi=hard
-LDFLAGS+=-lluajit -ldl -shared -pthread -lm -Wl,-rpath=$(LIBPATH)
+LDFLAGS+=-ldl -shared -pthread -lm -Wl,-rpath=$(LIBPATH)
 VER=0.0
 
 .PHONY: all clean tests install
