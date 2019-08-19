@@ -7,7 +7,7 @@ CFLAGS+=-Wall -Wno-parentheses -fomit-frame-pointer -std=c99 -O2
 CFLAGS+=-D_POSIX_C_SOURCE=200112L
 CFLAGS+=-mtune=generic
 #CFLAGS+=-march=native -mfloat-abi=hard
-LDFLAGS+=-ldl -shared -pthread -lm -Wl,-rpath=$(LIBPATH)
+LDFLAGS+=-ldl -shared -pthread -lm
 VER=0.0
 
 .PHONY: all clean tests install
@@ -19,7 +19,8 @@ freezer.so: freezer.o
 	lua fz-test.lua
 
 taskman.so: taskman.o mmaputil.so freezer.so
-	gcc -Wl,-soname,lua-taskman.so.$(VER) $(LDFLAGS) -o $@ $^
+	gcc -Wl,-soname,lua-taskman.so.$(VER) $(LDFLAGS) \
+	-Wl,-rpath=$(LIBPATH) -o $@ $^
 
 mmaputil.so: mmaputil.o
 	gcc $(LDFLAGS) -Wl,-soname,lua-mmaputil.so.$(VER) -o $@ $^
