@@ -269,7 +269,6 @@ static void *new_thread(void *luastate)
     bool succeeded = false;
     // Race?
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &previous_cancel);
-    sem_post(&task_running_sem);
     L = luastate;
     // Stack:
     //   3 - my index
@@ -281,6 +280,12 @@ static void *new_thread(void *luastate)
 
     // Let everyone know this isn't GCable.
     __atomic_add_fetch(&task->queue_in_use, 1, __ATOMIC_SEQ_CST);
+
+    if (++task->last_active_nonce == 0)
+	// Nonce zero means unused, so skip over it.
+	task->last_active_nonce = 1;
+    task->nonce = task->last_active_nonce;
+    sem_post(&task_running_sem);
 
     // Set exit status printing as asked.
     lua_getfield(L, -1, "show_errors");
@@ -322,10 +327,6 @@ static void *new_thread(void *luastate)
     }
     // We're done with the program description now.
     lua_remove(L, 2);
-    if (++task->last_active_nonce == 0)
-	// Nonce zero means unused, so skip over it.
-	task->last_active_nonce = 1;
-    task->nonce = task->last_active_nonce;
 
     for (int i=0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 &&
