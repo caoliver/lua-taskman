@@ -13,6 +13,7 @@
 #include <string.h>
 #include <time.h>
 #include <sched.h>
+#include <dlfcn.h>
 
 #include "lua_head.h"
 
@@ -422,6 +423,11 @@ static int create_task(uint8_t *taskdescr, int size,
 	goto bugout;
     }
     luaL_openlibs(newstate);
+    void *repl = dlsym(RTLD_DEFAULT, "lua_repl");
+    if (repl) {
+	lua_pushcfunction(newstate, repl);
+	lua_setglobal(newstate, "lua_repl");
+    }
     // Add error handler
     lua_pushcfunction(newstate, LUAFN_NAME(traceback));
     // Unpack task description
