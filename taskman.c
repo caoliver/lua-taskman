@@ -572,6 +572,7 @@ static void *housekeeper(void *dummy)
     lua_rawset(L, 1);
 
     bool shutdown = false;
+    global_flags = 0;
 
     sem_init(&task_running_sem, 0, 0);
 
