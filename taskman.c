@@ -51,7 +51,7 @@
 #define TASK_FAILURE 4099
 #define TASK_CANCEL 4100
 
-#define MAX_FLAG 11
+#define MAX_PRIVATE_FLAG 11
 #define MAX_MSG_TYPE 4095
 #define BROADCAST_SHIFT 12
 #define CHANNEL_COUNT 12
@@ -111,6 +111,9 @@ struct task {
 
 int num_tasks;
 struct task *tasks;
+
+#define MAX_GLOBAL_FLAG 31
+static uint32_t global_flags;
 
 pthread_t housekeeper_thread;
 
@@ -1044,11 +1047,11 @@ LUAFN(set_cancel)
 
 static char *badflag = "Invalid flag %d";
 
-LUAFN(change_flag)
+LUAFN(change_private_flag)
 {
     ASSURE_INITIALIZED;
     int flag = luaL_checkinteger(L, 1);
-    if (flag < 0 || flag >= MAX_FLAG)
+    if (flag < 0 || flag > MAX_PRIVATE_FLAG)
 	luaL_error(L, badflag, flag);
     int task_ix = validate_task(L, 3);
     if (task_ix < 0)
@@ -1062,11 +1065,11 @@ LUAFN(change_flag)
     return 1;
 }
 
-LUAFN(broadcast_flag)
+LUAFN(broadcast_private_flag)
 {
     if (initialized) {
 	int flag = luaL_checkinteger(L, 1);
-	if (flag < 0 || flag > MAX_FLAG)
+	if (flag < 0 || flag > MAX_PRIVATE_FLAG)
 	    luaL_error(L, badflag, flag);
 	for (int i = 0; i < num_tasks; i++)
 	    if (tasks[i].nonce != 0) {
@@ -1080,14 +1083,39 @@ LUAFN(broadcast_flag)
     return 0;
 }
 
-LUAFN(flag_is_true)
+LUAFN(private_flag_is_true)
 {
     bool result=false;
     if (initialized) {
 	int flag = luaL_checkinteger(L, 1);
-	if (flag < 0 || flag > MAX_FLAG)
+	if (flag < 0 || flag > MAX_PRIVATE_FLAG)
 	    luaL_error(L, badflag, flag);
 	result = tasks[my_index].control_flags & 1<<flag;
+    }
+    lua_pushboolean(L, result);
+    return 1;
+}
+
+LUAFN(change_global_flag)
+{
+    ASSURE_INITIALIZED;
+    int flag = luaL_checkinteger(L, 1);
+    if (flag < 0 || flag > MAX_GLOBAL_FLAG)
+	luaL_error(L, badflag, flag);
+    __atomic_and_fetch(&global_flags, ~(1<<flag), __ATOMIC_SEQ_CST);
+    __atomic_or_fetch(&global_flags, lua_toboolean(L, 2)<<flag,
+		      __ATOMIC_SEQ_CST);
+    return 0;
+}
+
+LUAFN(global_flag_is_true)
+{
+    bool result=false;
+    if (initialized) {
+	int flag = luaL_checkinteger(L, 1);
+	if (flag < 0 || flag > MAX_GLOBAL_FLAG)
+	    luaL_error(L, badflag, flag);
+	result = global_flags & 1<<flag;
     }
     lua_pushboolean(L, result);
     return 1;
@@ -1312,14 +1340,16 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     /********************/
 
     const luaL_Reg funcptrs[] = {
-	FN_ENTRY(broadcast_flag),
 	FN_ENTRY(broadcast_message),
+	FN_ENTRY(broadcast_private_flag),
 	FN_ENTRY(cancel_all),
-	FN_ENTRY(flag_is_true),
+	FN_ENTRY(change_global_flag),
+	FN_ENTRY(private_flag_is_true),
 	FN_ENTRY(initialize),
 	FN_ENTRY(interrupt_all),
 	FN_ENTRY(get_message),
 	FN_ENTRY(get_my_name),
+	FN_ENTRY(global_flag_is_true),
 	FN_ENTRY(set_affinity),
 	FN_ENTRY(set_cancel),
 	FN_ENTRY(set_display_create_errors),
@@ -1365,7 +1395,7 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     lua_pushvalue(L, -1);
     STORECCLOSURE(cancel_task, 1, -3);
     lua_pushvalue(L, -1);
-    STORECCLOSURE(change_flag, 1, -3);
+    STORECCLOSURE(change_private_flag, 1, -3);
     lua_pushvalue(L, -1);
     STORECCLOSURE(interrupt_task, 1, -3);
     lua_pushvalue(L, -1);
