@@ -1083,7 +1083,7 @@ LUAFN(broadcast_private_flag)
     return 0;
 }
 
-LUAFN(private_flag_is_true)
+LUAFN(private_flag)
 {
     bool result=false;
     if (initialized) {
@@ -1108,7 +1108,7 @@ LUAFN(change_global_flag)
     return 0;
 }
 
-LUAFN(global_flag_is_true)
+LUAFN(global_flag)
 {
     bool result=false;
     if (initialized) {
@@ -1344,12 +1344,12 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(broadcast_private_flag),
 	FN_ENTRY(cancel_all),
 	FN_ENTRY(change_global_flag),
-	FN_ENTRY(private_flag_is_true),
+	FN_ENTRY(private_flag),
 	FN_ENTRY(initialize),
 	FN_ENTRY(interrupt_all),
 	FN_ENTRY(get_message),
 	FN_ENTRY(get_my_name),
-	FN_ENTRY(global_flag_is_true),
+	FN_ENTRY(global_flag),
 	FN_ENTRY(set_affinity),
 	FN_ENTRY(set_cancel),
 	FN_ENTRY(set_display_create_errors),

@@ -9,13 +9,13 @@ local function reader()
       t.wait_message()
    end
    print(os.clock()-s)
-   t.broadcast_flag(0, 1);
+   t.change_global_flag(0, 1);
 end
 
 local function writer()
    local t=require 'taskman'
    local msg=('0'):rep(msg_size)
-   while not t.flag_is_true(0) do
+   while not t.global_flag(0) do
       t.send_message(msg, 'reader')
    end
 end
