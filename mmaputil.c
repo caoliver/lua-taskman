@@ -24,7 +24,7 @@ const char *cdef_string =
     "uint8_t *allocate_twinmap(size_t *);"
     "uint8_t *allocate_map(size_t *);"
     "void free_twinmap(void *base, size_t size);"
-    "free_map(void *base, size_t size);"
+    "void free_map(void *base, size_t size);"
    ;
 
 static int mapfd;
