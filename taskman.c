@@ -779,23 +779,6 @@ LUAFN(timestamp_name)
     return 1;
 }
 
-LUAFN(seconds_from_now)
-{
-    double interval = lua_tonumber(L, 1);
-    if (interval < 0)
-	interval = 0;
-    struct timespec *ts;
-    ts = lua_newuserdata(L, sizeof(*ts));
-    clock_gettime(CLOCK_REALTIME, ts);
-    interval += ts->tv_sec + (double)1E-9*ts->tv_nsec;
-    ts->tv_sec = interval;
-    ts->tv_nsec = 1E9*(interval - ts->tv_sec);
-    lua_pushvalue(L, lua_upvalueindex(1));
-    lua_setmetatable(L, -2);
-    lua_replace(L, 1);
-    return 1;
-}
-
 struct task_cache_entry {
     uint16_t task_ix;
     uint16_t nonce;
@@ -1159,6 +1142,23 @@ LUAFN(set_immunity)
 /************/
 /* Messages */
 /************/
+
+LUAFN(seconds_from_now)
+{
+    double interval = lua_tonumber(L, 1);
+    if (interval < 0)
+	interval = 0;
+    struct timespec *ts;
+    ts = lua_newuserdata(L, sizeof(*ts));
+    clock_gettime(CLOCK_REALTIME, ts);
+    interval += ts->tv_sec + (double)1E-9*ts->tv_nsec;
+    ts->tv_sec = interval;
+    ts->tv_nsec = 1E9*(interval - ts->tv_sec);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_setmetatable(L, -2);
+    lua_replace(L, 1);
+    return 1;
+}
 
 LUAFN(get_message)
 {
