@@ -1,0 +1,78 @@
+tid = name | task | task,nonce
+
+* Starting/Stopping
+** initialize(params)
+
+  params:
+
+  task_limit: maximum number of tasks allowed.
+
+  control_channel_bytes: size of housekeeper message queue
+
+  main_channel_bytes: size of :main: message queue
+
+** shutdown()
+* Tasks
+** create_task{task_specification} -> tid
+*** task_specification
+    | field       | mandatory | value     | use                       |
+    |-------------+-----------+-----------+---------------------------|
+    | program     | yes       | ff or str | program to run:           |
+    |             |           |           | fn captures upvals,       |
+    |             |           |           | ":file" for file,         |
+    |             |           |           | otherwise code string.    |
+    | queue_size  | no        | int       | message queue size        |
+    | task_name   | no        | str       | task id                   |
+    | show_errors | no        | bool      | display on stderr (async) |
+    | show_exits  | no        | bool      | display on stderr (async) |
+
+indexed elements are passed as function arguments.
+
+** get_my_name() -> name, task, nonce
+** lookup_task(tid) -> nil | task, nonce
+** interrupt_task(hard, tid) -> task
+** interrupt_all(hard) - except caller and main
+** cancel_task(tid) -> task
+** cancel_all() - except caller and main
+** set_cancel(enable, deferred) -> old_enable, old_deferred
+* flags
+** change_private_flag(flag, state, tid)
+** broadcast_private_flag(flag, state)
+** private_flag(flag)
+** change_global_flag(flag, state)
+** global_flag(flag)
+** set_immunity(state[, tid])
+* messages
+** seconds_from_now(seconds) -> timestamp/opaque
+
+** get_message() -> nil | message, type, { name, } task, nonce
+** wait_message(optional timestamp) -> same as get_message
+** send_message(message, tid)
+** send_message_with_type(message, type, tid)
+** broadcast_message(message, type, channel)
+** set_reception(channel_mask)
+** set_subscriptions(system_message_table)
+*** Subscriptions
+   child_task_exits
+   any_task_exits
+   new_named_tasks
+   any_new_tasks
+   create_failures
+*** Messages types sent
+    | task_create_failed | Housekeeper failed to launch task        |
+    | task_created       |                                          |
+    | task_exited        | Normal exit                              |
+    | task_failed        | Soft interruption counts as failure      |
+    | task_cancelled     | Hard interruption counts as cancellation |
+* Scheduler (linux only)
+** set_priority(priority[, policy])
+*** Policy
+    sched_rr
+    sched_fifo
+    sched_idle
+    sched_batch
+    sched_other
+** set_affinity{cpu list}
+* Status display (async)
+  status(bool) -- Show task statuson stderr; true to list unnamed.
+  set_display_create_errors(true) -- Show create failues on stderr.
