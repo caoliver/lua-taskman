@@ -1,5 +1,13 @@
 local marshal = require 'freezer'
 
+do
+   local a,b='a','b'
+   local function swapper() a,b=b,a end
+   local function joiner() return (a..b) end
+   swapper,joiner=unpack(marshal.decode(marshal.encode{swapper,joiner}))
+   swapper()
+   assert(joiner() == 'ba')
+end
 local k = { "tkey" }
 local a = { "a", "b", "c", [k] = "tval" }
 local s = assert(marshal.encode(a))

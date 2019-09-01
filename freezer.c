@@ -610,11 +610,9 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 	    *src += used;
 	    switch(type) {
 	    case TYPE_UINT: {
-		lua_newtable(L);
-		lua_pushinteger(L, code_position);
-		lua_rawseti(L, -2, 1);
-		lua_pushinteger(L, result);
-		lua_rawseti(L, -2, 2);
+		uint32_t *uvent = lua_newuserdata(L, 2*sizeof(uint32_t));
+		uvent[0] = code_position;
+		uvent[1] = result;
 		lua_rawseti(L, SEEN_UPVALUE_IDX, ++*seen_upvalue_count);
 		thaw_recursive(L, src, available, seen_object_count,
 			       seen_upvalue_count, merge_dupl_strs);
@@ -625,11 +623,10 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 		lua_rawgeti(L, SEEN_UPVALUE_IDX, result);
 		if (lua_isnil(L, 1))
 		    luaL_error(L, invalid_data);
-		lua_rawgeti(L, -1, 1);
-		lua_rawget(L, SEEN_OBJECT_IDX);
-		lua_rawgeti(L, -2, 2);
-		lua_upvaluejoin(L, -4, upvalueix, -2, lua_tointeger(L, -1));
-		lua_pop(L, 3);
+		uint32_t *uvent = lua_touserdata(L, -1);
+		lua_rawgeti(L, SEEN_OBJECT_IDX, uvent[0]);
+		lua_upvaluejoin(L, -3, upvalueix, -1, uvent[1]);
+		lua_pop(L, 2);
 		break;
 	    }
 	    default:
