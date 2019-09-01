@@ -282,9 +282,6 @@ static void *new_thread(void *luastate)
     if (++task->last_active_nonce == 0)
 	// Nonce zero means unused, so skip over it.
 	task->last_active_nonce = 1;
-    task->nonce = task->last_active_nonce;
-    sem_post(&task_running_sem);
-
     // Set exit status printing as asked.
     lua_getfield(L, -1, "show_errors");
     show_errors = lua_toboolean(L, -1);
@@ -310,8 +307,14 @@ static void *new_thread(void *luastate)
 	if (rc == 0)
 	    lua_pushfstring(L, "Invalid program type: %s",
 			    lua_typename(L, lua_type(L, -1)));
+	// Wake housekeeper even though program is bogus.
+	sem_post(&task_running_sem);
 	goto bugout;
     }
+
+    // Program is established, so tell housekeeper we're running.
+    task->nonce = task->last_active_nonce;
+    sem_post(&task_running_sem);
 
     // Setup arguments from program description.
     int arg_count = 0;
