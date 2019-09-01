@@ -17,7 +17,7 @@ local function writer()
    local drops = 0
    local sent = 0
    while sent < msg_count do
-      if (t.send_message(msg, 'reader') >= 0) then
+      if (t.send_message(msg, 'reader')) then
          sent = sent + 1
       else
          drops = drops+1
