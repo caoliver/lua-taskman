@@ -944,6 +944,21 @@ LUAFN(create_task)
     return wait_for_reply(L);
 }
 
+LUAFN(set_thread_name)
+{
+#ifdef __linux__
+    if (initialized && my_index > 0) {
+	if (lua_type(L, 1) != LUA_TSTRING || lua_objlen(L, 1) < 1)
+	    luaL_error(L, "Bad thread name");
+	char short_name[16];
+	strncpy(short_name, lua_tostring(L, 1), 16);
+	short_name[15] = 0;
+	pthread_setname_np(pthread_self(), short_name);
+    }
+#endif
+    return 0;
+}
+
 LUAFN(get_my_name)
 {
     ASSURE_INITIALIZED;
@@ -1382,6 +1397,7 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(set_immunity),
 	FN_ENTRY(set_priority), // Requires special privs.
 	FN_ENTRY(set_reception),
+	FN_ENTRY(set_thread_name),
 	FN_ENTRY(set_subscriptions),
 	FN_ENTRY(shutdown),
 	FN_ENTRY(status),
