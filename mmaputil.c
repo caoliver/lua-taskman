@@ -17,7 +17,7 @@
 #define MAP_32BIT 0
 #endif
 
-unsigned int page_mask, page_size;
+static unsigned int page_mask, page_size;
 
 const char *cdef_string =
     "unsigned int page_size;"
