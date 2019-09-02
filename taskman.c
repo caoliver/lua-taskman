@@ -158,7 +158,7 @@ static void sigusr2_handler(int sig)
 {
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-    pthread_cancel(tasks[my_index].thread);
+    pthread_cancel(pthread_self());
 }
 
 LUAFN(traceback)
@@ -1307,13 +1307,12 @@ LUAFN(set_priority)
     int policy = SCHED_OTHER;
     if (!lua_isnil(L, 2))
 	policy = lua_tointeger(L, 2);
-    lua_pushboolean(L,
-		    pthread_setschedparam(tasks[my_index].thread,
-					  policy, &param) == 0);
-    return 1;
+    lua_pushboolean(L, pthread_setschedparam(tasks[my_index].thread,
+					     policy, &param) == 0);
 #else
-    luaL_error(L, "**NOT IMPLEMENTED**");
+    lua_pushboolean(L, false);
 #endif
+    return 1;
 }
 
 LUAFN(set_affinity)
@@ -1335,10 +1334,10 @@ LUAFN(set_affinity)
 	CPU_SET(cpu, &cpuset);
     }
     lua_pushboolean(L, sched_setaffinity(0, sizeof(cpuset), &cpuset) == 0);
-    return 1;
 #else
-    luaL_error(L, "**NOT IMPLEMENTED**");
+    lua_pushboolean(L, false);
 #endif
+    return 1;
 }
 
 /******************/
