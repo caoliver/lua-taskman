@@ -20,8 +20,6 @@
 static unsigned int page_mask, page_size;
 
 const char *cdef_string =
-    "unsigned int page_size;"
-    "unsigned int page_mask;"
     "uint8_t *allocate_twinmap(size_t *, size_t *where);"
     "uint8_t *allocate_map(size_t *, size_t *where);"
     "void free_twinmap(void *base, size_t size, size_t where);"
