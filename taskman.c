@@ -45,16 +45,18 @@
 
 // Client message types
 #define NORMAL_CLIENT_MSG 0
-#define TASK_CREATE 4096
-#define TASK_BAD_CREATE 4097
-#define TASK_EXIT 4098
-#define TASK_FAILURE 4099
-#define TASK_CANCEL 4100
+#define SYSMSG 8192
+#define TASK_CREATE SYSMSG
+#define TASK_BAD_CREATE (SYSMSG+1)
+#define TASK_EXIT (SYSMSG+2)
+#define TASK_FAILURE (SYSMSG+3)
+#define TASK_CANCEL (SYSMSG+4)
 
-#define MAX_PRIVATE_FLAG 11
+#define MAX_PRIVATE_FLAG 30
 #define MAX_MSG_TYPE 4095
-#define BROADCAST_SHIFT 12
-#define CHANNEL_COUNT 12
+#define CHANNEL_COUNT 24
+
+#define CHANNEL_MASK ((1<<CHANNEL_COUNT)-1)
 
 #define SUBSCRIBE_SHIFT 24
 char *announcements[] = {
@@ -93,7 +95,8 @@ struct task {
     uint16_t nonce, last_active_nonce;
     uint16_t parent_index;
     uint16_t parent_nonce;
-    uint32_t control_flags;
+    uint32_t private_flags;
+    uint32_t subscriptions;
     uint32_t queue_in_use;
     struct circbuf incoming_queue;
     uint8_t *incoming_store;
@@ -251,8 +254,8 @@ void cancellation_handler(void *dummy)
     for (int i=0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 &&
 	    (i==task->parent_index && tasks[i].nonce == task->parent_nonce &&
-	     tasks[i].control_flags & RECEIVE_CHILD_EXITS ||
-	     tasks[i].control_flags & RECEIVE_ALL_TASK_EXITS))
+	     tasks[i].subscriptions & RECEIVE_CHILD_EXITS ||
+	     tasks[i].subscriptions & RECEIVE_ALL_TASK_EXITS))
 	    send_client_msg(&tasks[i], TASK_CANCEL, "", 0);
 
     tasks[my_index].nonce = 0;
@@ -331,9 +334,9 @@ static void *new_thread(void *luastate)
 
     for (int i=0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 &&
-	    (tasks[i].control_flags & RECEIVE_NEW_NAMED_TASKS &&
+	    (tasks[i].subscriptions & RECEIVE_NEW_NAMED_TASKS &&
 	     tasks[my_index].name ||
-	     tasks[i].control_flags & RECEIVE_ANY_NEW_TASKS))
+	     tasks[i].subscriptions & RECEIVE_ANY_NEW_TASKS))
 	    send_client_msg(&tasks[i], TASK_CREATE, "", 0);
 
     int pcall_succeeds = 0;
@@ -380,8 +383,8 @@ bugout:
     for (int i=0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 &&
 	    (i==task->parent_index && tasks[i].nonce == task->parent_nonce &&
-	     tasks[i].control_flags & RECEIVE_CHILD_EXITS ||
-	     tasks[i].control_flags & RECEIVE_ALL_TASK_EXITS))
+	     tasks[i].subscriptions & RECEIVE_CHILD_EXITS ||
+	     tasks[i].subscriptions & RECEIVE_ALL_TASK_EXITS))
 	    send_client_msg(&tasks[i],
 			    succeeded ? TASK_EXIT : TASK_FAILURE,
 			    lua_tostring(L, -1), lua_objlen(L, -1));
@@ -444,7 +447,8 @@ static int create_task(uint8_t *taskdescr, int size,
     task = &tasks[freetask];
     // pthread_cancel needs this for cleanup.
     task->my_state = newstate;
-    task->control_flags = 0;
+    task->private_flags = 0;
+    task->subscriptions = 0;
 
     // Set task name if given one.
     lua_getfield(newstate, -1, "task_name");
@@ -520,7 +524,7 @@ bugout:
     if (display_create_errors)
 	fprintf(stderr, "%s\n", lua_tostring(newstate, -1));
     if (sender_task->nonce != 0 &&
-	sender_task->control_flags & RECEIVE_CREATE_FAILURES) {
+	sender_task->subscriptions & RECEIVE_CREATE_FAILURES) {
 	size_t len;
 	const char *errmsg = lua_tolstring(newstate, -1, &len);
 	send_client_msg(sender_task, TASK_BAD_CREATE, errmsg, len);
@@ -665,7 +669,8 @@ static void *housekeeper(void *dummy)
 	}
 	    cb_release(&control_channel_buf,
 		       ALIGN(sizeof(struct message)+size));
-	    tasks[sender].control_flags=0;
+	    tasks[sender].private_flags=0;
+	    tasks[sender].subscriptions=0;
 	    pthread_join(tasks[sender].thread, NULL);
 	    if (--task_count <= 0 && shutdown)
 		goto fini;
@@ -989,7 +994,7 @@ LUAFN(interrupt_task)
     int task_ix = validate_task(L, 2);
     if (task_ix != my_index && task_ix > 0 &&
 	tasks[task_ix].nonce != 0 &&
-	(~tasks[task_ix].control_flags & IMMUNITY || my_index == 0))
+	(~tasks[task_ix].private_flags & IMMUNITY || my_index == 0))
 	pthread_kill(tasks[task_ix].thread, signo);
     else
 	return nosuchtask(L);
@@ -1003,7 +1008,7 @@ LUAFN(interrupt_all)
     int signo = lua_toboolean(L, 1) ? 12 : 10;
     for (int i = 1; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 && i != my_index &&
-	    (~tasks[i].control_flags & IMMUNITY || my_index == 0))
+	    (~tasks[i].private_flags & IMMUNITY || my_index == 0))
 	    pthread_kill(tasks[i].thread, signo);
     return 0;
 }
@@ -1014,7 +1019,7 @@ LUAFN(cancel_task)
     int task_ix = validate_task(L, 1);
     if (task_ix != my_index && task_ix > 0 &&
 	tasks[task_ix].nonce != 0 &&
-	(~tasks[task_ix].control_flags & IMMUNITY || my_index == 0))
+	(~tasks[task_ix].private_flags & IMMUNITY || my_index == 0))
 	pthread_cancel(tasks[task_ix].thread);
     else
 	return nosuchtask(L);
@@ -1027,7 +1032,7 @@ LUAFN(cancel_all)
     TASK_FAIL_IF_UNINITIALISED;
     for (int i = 1; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 && i != my_index &&
-	    (~tasks[i].control_flags & IMMUNITY || my_index == 0))
+	    (~tasks[i].private_flags & IMMUNITY || my_index == 0))
 	    pthread_cancel(tasks[i].thread);
     return 0;
 }
@@ -1080,9 +1085,9 @@ LUAFN(change_private_flag)
     int task_ix = validate_task(L, 3);
     if (task_ix < 0)
 	return nosuchtask(L);
-    __atomic_and_fetch(&tasks[task_ix].control_flags, ~(1<<flag),
+    __atomic_and_fetch(&tasks[task_ix].private_flags, ~(1<<flag),
 		       __ATOMIC_SEQ_CST);
-    __atomic_or_fetch(&tasks[task_ix].control_flags,
+    __atomic_or_fetch(&tasks[task_ix].private_flags,
 		      lua_toboolean(L, 2)<<flag,
 		      __ATOMIC_SEQ_CST);
     lua_pushinteger(L, task_ix);
@@ -1097,9 +1102,9 @@ LUAFN(broadcast_private_flag)
 	luaL_error(L, badflag, flag);
     for (int i = 0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0) {
-	    __atomic_and_fetch(&tasks[i].control_flags, ~(1<<flag),
+	    __atomic_and_fetch(&tasks[i].private_flags, ~(1<<flag),
 			       __ATOMIC_SEQ_CST);
-	    __atomic_or_fetch(&tasks[i].control_flags,
+	    __atomic_or_fetch(&tasks[i].private_flags,
 			      lua_toboolean(L, 2)<<flag,
 			      __ATOMIC_SEQ_CST);
 	}
@@ -1113,9 +1118,15 @@ LUAFN(private_flag)
 	int flag = luaL_checkinteger(L, 1);
 	if (flag < 0 || flag > MAX_PRIVATE_FLAG)
 	    luaL_error(L, badflag, flag);
-	result = tasks[my_index].control_flags & 1<<flag;
+	result = tasks[my_index].private_flags & 1<<flag;
     }
     lua_pushboolean(L, result);
+    return 1;
+}
+
+LUAFN(get_private_flag_word)
+{
+    lua_pushnumber(L, initialized ? tasks[my_index].private_flags : 0);
     return 1;
 }
 
@@ -1144,6 +1155,12 @@ LUAFN(global_flag)
     return 1;
 }
 
+LUAFN(get_global_flag_word)
+{
+    lua_pushnumber(L, initialized ? global_flags : 0);
+    return 1;
+}
+
 LUAFN(set_immunity)
 {
     if (!initialized)
@@ -1151,14 +1168,14 @@ LUAFN(set_immunity)
     int task_ix = -1;
     if (my_index == 0) {
 	task_ix = validate_task(L, 2);
-    } else if (tasks[0].control_flags & IMMUNITY)
+    } else if (tasks[0].private_flags & IMMUNITY)
 	task_ix = my_index;
     if (task_ix < 0)
 	return nosuchtask(L);
 
-    __atomic_and_fetch(&tasks[task_ix].control_flags, ~IMMUNITY,
+    __atomic_and_fetch(&tasks[task_ix].private_flags, ~IMMUNITY,
 		       __ATOMIC_SEQ_CST);
-    __atomic_or_fetch(&tasks[task_ix].control_flags,
+    __atomic_or_fetch(&tasks[task_ix].private_flags,
 		      lua_toboolean(L, 1) ? IMMUNITY : 0,
 		      __ATOMIC_SEQ_CST);
     lua_pushinteger(L, task_ix);
@@ -1246,9 +1263,11 @@ LUAFN(send_message_with_type)
     int type = lua_tointeger(L, 2);
     if (type > MAX_MSG_TYPE || type < 0)
 	luaL_error(L, "Bad user message type");
-    if (send_client_msg(&tasks[task_ix], type, msg, msglen) < 0)
-	lua_pushboolean(L, false);
-    else
+    if (send_client_msg(&tasks[task_ix], type, msg, msglen) < 0) {
+	lua_pushnil(L);
+	lua_pushstring(L, "Queue full");
+	return 2;
+    } else
 	lua_pushinteger(L, task_ix);
     return 1;
 }
@@ -1263,12 +1282,12 @@ LUAFN(broadcast_message)
     if (type > MAX_MSG_TYPE || type < 0)
 	luaL_error(L, "Bad broadcast message type");
     int channels = lua_tointeger(L, 3);
-    if (channels > (1<<CHANNEL_COUNT) - 1 || channels < 1)
+    if (channels > CHANNEL_MASK || channels < 1)
 	luaL_error(L, "Bad broadcast channel selection");
     for (int i = 0; i < num_tasks; i++) {
 	if (i != my_index &&
 	    tasks[i].nonce != 0 &&
-	    tasks[i].control_flags & channels<<BROADCAST_SHIFT)
+	    tasks[i].subscriptions & channels)
 	    if (send_client_msg(&tasks[i], type | 0x1000 , msg, msglen) >=0)
 		send_count++;
     }
@@ -1280,14 +1299,10 @@ LUAFN(set_reception)
 {
     ASSURE_INITIALIZED;
     int mask = lua_tointeger(L, 1);
-    if (mask < 0 || mask > 255)
+    if (mask < 0 || mask > CHANNEL_MASK)
 	luaL_error(L, "Bad broadcast mask");
-    __atomic_and_fetch(&tasks[my_index].control_flags,
-		       ~(255<<BROADCAST_SHIFT),
-		       __ATOMIC_SEQ_CST);
-    __atomic_or_fetch(&tasks[my_index].control_flags,
-		      mask<<BROADCAST_SHIFT,
-		       __ATOMIC_SEQ_CST);
+    tasks[my_index].subscriptions &= ~CHANNEL_MASK;
+    tasks[my_index].subscriptions |= mask;
     return 0;
 }
 
@@ -1301,10 +1316,8 @@ LUAFN(set_subscriptions)
 	flags |=  (lua_isnil(L, -1) ? 0 : (1<<SUBSCRIBE_SHIFT+i));
 	lua_pop(L, 1);
     }
-    __atomic_and_fetch(&tasks[my_index].control_flags, ~SUBSCRIBE_MASK,
-		       __ATOMIC_SEQ_CST);
-    __atomic_or_fetch(&tasks[my_index].control_flags, flags,
-		      __ATOMIC_SEQ_CST);
+    tasks[my_index].subscriptions &= CHANNEL_MASK;
+    tasks[my_index].subscriptions += flags;
     return 0;
 }
 
@@ -1386,11 +1399,13 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(cancel_all),
 	FN_ENTRY(change_global_flag),
 	FN_ENTRY(private_flag),
+	FN_ENTRY(get_private_flag_word),
 	FN_ENTRY(initialize),
 	FN_ENTRY(interrupt_all),
 	FN_ENTRY(get_message),
 	FN_ENTRY(get_my_name),
 	FN_ENTRY(global_flag),
+	FN_ENTRY(get_global_flag_word),
 	FN_ENTRY(set_affinity),
 	FN_ENTRY(set_cancel),
 	FN_ENTRY(set_display_create_errors),

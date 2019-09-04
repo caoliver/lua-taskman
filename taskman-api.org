@@ -36,20 +36,23 @@ indexed elements are passed as function arguments.
 ** cancel_all() - except caller and main
 ** set_cancel(enable, deferred) -> old_enable, old_deferred
 * flags
+  Private flags range from 0 to 30.
 ** change_private_flag(flag, state, tid)
 ** broadcast_private_flag(flag, state)
 ** private_flag(flag)
+** get_private_word()
 ** change_global_flag(flag, state)
 ** global_flag(flag)
+** get_global_flag_word()
 ** set_immunity(state[, tid])
 * messages
 ** seconds_from_now(seconds) -> timestamp/opaque
-
 ** get_message() -> nil | message, type, { name, } task, nonce
 ** wait_message(optional timestamp) -> same as get_message
 ** send_message(message, tid)
 ** send_message_with_type(message, type, tid)
 ** broadcast_message(message, type, channel)
+24 channels from 0 to 23.  Higher are reserver for system.
 ** set_reception(channel_mask)
 ** set_subscriptions(system_message_table)
 *** Subscriptions
