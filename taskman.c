@@ -716,6 +716,10 @@ fini:
     return NULL;
 }
 
+/******************************/
+/* Internal utility functions */
+/******************************/
+
 #define ASSURE_INITIALIZED if (!initialized) initialize(L, 0, 0, 0)
 #define TASK_FAIL_IF_UNINITIALISED		\
     do if (!initialized) {			\
@@ -769,10 +773,6 @@ static int initialize(lua_State *L,
 
     return pthread_create(&housekeeper_thread, NULL, &housekeeper, NULL);
 }
-
-/******************************/
-/* Internal utility functions */
-/******************************/
 
 LUAFN(timestamp_name)
 {
@@ -1101,7 +1101,7 @@ LUAFN(broadcast_private_flag)
     if (flag < 0 || flag > MAX_PRIVATE_FLAG)
 	luaL_error(L, badflag, flag);
     for (int i = 0; i < num_tasks; i++)
-	if (tasks[i].nonce != 0) {
+	if (i != my_index && tasks[i].nonce != 0) {
 	    __atomic_and_fetch(&tasks[i].private_flags, ~(1<<flag),
 			       __ATOMIC_SEQ_CST);
 	    __atomic_or_fetch(&tasks[i].private_flags,
