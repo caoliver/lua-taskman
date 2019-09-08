@@ -128,20 +128,20 @@ end
 print('\n\nscalars\n')
 
 times=scale*1e6
---ebench('small ints', 456)
+ebench('small ints', 456)
 dbench('small ints', 456)
 
---ebench('doubles', math.pi)
+ebench('doubles', math.pi)
 dbench('doubles', math.pi)
 
 tdat=('#'):rep(1024)
---ebench('long strings', tdat)
+ebench('long strings', tdat)
 dbench('long strings', tdat)
 
---ebench('booleans', true)
+ebench('booleans', true)
 dbench('booleans', true)
 
---ebench('nil', nil)
+ebench('nil', nil)
 dbench('nil', nil)
 
 --]]
@@ -151,22 +151,22 @@ print('\n\ntables\n')
 
 times=scale*5e5
 
---ebench('empty', {})
+ebench('empty', {})
 dbench('empty', {})
 
 tdat={'one','two','three','four','five','six','seven'}
---ebench('num->string', tdat)
+ebench('num->string', tdat)
 dbench('num->string', tdat)
 
 times=scale*25e4
 
 td={aardvark='one',bat='two',cheetah='three',dog='four',elephant='five',
     fish='six',giraffe='seven'}
---ebench('string->string', tdat)
+ebench('string->string', tdat)
 dbench('string->string', tdat)
 
 td={aardvark='animal',bat='animal',cheetah='animal',dog='animal',    elephant='animal', fish='animal',giraffe='animal'}
---ebench('string->string dup values', tdat)
+ebench('string->string dup values', tdat)
 dbench('string->string dup values', tdat)
 
 times=scale*5e5
@@ -185,7 +185,7 @@ end
 times=scale*2e5
 
 tdat=make_clique(8)
---ebench('cyclic references / 8 node clique', tdat, true)
+ebench('cyclic references / 8 node clique', tdat, true)
 dbench('cyclic references / 8 node clique', tdat, true)
 
 --]]
@@ -199,19 +199,19 @@ function closures(strip_flag)
    times=scale*5e5
 
    function tdat() print('I have no upvalues') end
-   --ebench('function without upvalues', tdat, true)
+   ebench('function without upvalues', tdat, true)
    dbench('function without upvalues', tdat, true)
 
    do
       local x = 'wombat'
       function tdat() print('My upvalue has the value '..x) end
    end
-   --ebench('function with upvalues', tdat, true)
+   ebench('function with upvalues', tdat, true)
    dbench('function with upvalues', tdat, true)
 
    times=scale*1e5
-   tdat=loadfile 'bench.lua'
-   --ebench('this file as a chunk', tdat, true)
+   tdat=loadfile 'fz-bench.lua'
+   ebench('this file as a chunk', tdat, true)
    dbench('this file as a chunk', tdat, true)
 end
 

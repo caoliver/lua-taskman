@@ -9,12 +9,16 @@ CFLAGS+=-mtune=generic
 #CFLAGS+=-march=native -mfloat-abi=hard
 LDFLAGS+=-ldl -shared -pthread -lm
 VER=0.0
+SHOBJS=freezer.so taskman.so mmaputil.so strbuff.so
 
 .PHONY: all clean tests install
 
 all: taskman.so freezer.so
 
-freezer.so: freezer.o 
+strbuff.so: strbuff.o
+	gcc $(LDFLAGS) -Wl,-soname,lua-strbuff.so.$(VER) -o $@ $^
+
+freezer.so: freezer.o strbuff.so
 	gcc $(LDFLAGS) -Wl,-soname,lua-freezer.so.$(VER) -o $@ $^
 	lua fz-test.lua
 
@@ -29,7 +33,7 @@ install: freezer.so taskman.so mmaputil.so ffi+.lua
 	install -m 0755 *.so $(LIBPATH)
 	install -m 0644 ffi+.lua $(LUAPATH)
 	install -m 0644 mmaputil.h cbuf.h $(INCPATH)
-	(cd $(LIBPATH) && ldconfig -N -l freezer.so taskman.so mmaputil.so)
+	(cd $(LIBPATH) && ldconfig -N -l $(SHOBJS))
 
 clean:
 	find \( -name \*.o -o -name \*.so -o -name \*.so.$(VER) \) -delete

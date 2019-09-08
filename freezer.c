@@ -40,17 +40,40 @@
 #include <assert.h>
 #include <limits.h>
 
+#include "strbuff.h"
+
 #if defined(__APPLE__)
 #define bswap_32(x) OSSwapInt32(x)
 #define bswap_64(x) OSSwapInt64(x)
 #elif defined(__linux__)
 #include <byteswap.h>
 #else
-#error You figure out what to do here for swapping
+// In case the system doesn't provide any magic for us...
+#define SWAP_BYTES(a,b) do { uint8_t t = a; a = b; b = t; } while(0)
+static uint32_t bswap_32(uint32_t n)
+{
+    union { uint8_t ch[4]; uint32_t word; } pun = { .word = n };
+    pun.word = n;
+    SWAP_BYTES(pun.ch[0], pun.ch[3]);
+    SWAP_BYTES(pun.ch[1], pun.ch[2]);
+    return pun.word;
+}
+
+static uint64_t bswap_64(uint64_t n)
+{
+    union { uint8_t ch[4]; uint64_t word; } pun = { .word = n };
+    SWAP_BYTES(pun.ch[0], pun.ch[7]);
+    SWAP_BYTES(pun.ch[1], pun.ch[6]);
+    SWAP_BYTES(pun.ch[2], pun.ch[5]);
+    SWAP_BYTES(pun.ch[3], pun.ch[4]);
+    return pun.word;
+}
 #endif
 
+#define STRLIT(VAL) (char []){VAL}
+
 // Include for debugging.
-//#include "show_stack.h"
+// #include "show_stack.h"
 
 // Do you want to start the serialization with a magic cookie?
 // #define MAGIC_COOKIE { 'L', 'F', 'R', 'Z' }
@@ -62,88 +85,10 @@ unsigned char magic_header[] = MAGIC_COOKIE;
 static int big_endian=0;
 
 #define USER_SERIALIZER_IDX 3
-#define SEEN_OBJECT_IDX 4
-#define SEEN_UPVALUE_IDX (SEEN_OBJECT_IDX+1)
-#define STRING_ACCUMULATOR_IDX (SEEN_OBJECT_IDX+2)
+#define SEEN_OBJECT_IDX 2
+#define SEEN_UPVALUE_IDX 4
+#define STRING_ACCUMULATOR_IDX 5
 
-struct buffer {
-    lua_State *L;
-    char buf[BUFSIZ > 16384 ? 8192 : BUFSIZ];
-    char *ptr;
-    unsigned int depth;
-};
-
-static void buf_buffinit(lua_State *L, struct buffer *buf)
-{
-    buf->L = L;
-    buf->ptr = buf->buf;
-    buf->depth = 0;
-}
-
-static void buf_addlstring(struct buffer *buf, const char *str, size_t len)
-{
-    while (len > 0) {
-	size_t remaining = buf->buf + sizeof(buf->buf) - buf->ptr;
-	if (len > remaining) {
-	    memcpy(buf->ptr, str, remaining);
-	    lua_pushlstring(buf->L, buf->buf, sizeof(buf->buf));
-	    lua_rawseti(buf->L, STRING_ACCUMULATOR_IDX, ++buf->depth);
-	    str += remaining;
-	    len -= remaining;
-	    buf->ptr = buf->buf;
-	} else {
-	    memcpy(buf->ptr, str, len);
-	    buf->ptr += len;
-	    break;
-	}
-    }
-}
-
-#define CONCAT_SIZE 8
-static void buf_pushresult(struct buffer *buf)
-{
-    lua_State *L = buf->L;
-    lua_pushlstring(L, buf->buf, buf->ptr - buf->buf);
-    int depth = buf->depth;
-    if (depth==0)
-	return;
-    lua_rawseti(L, STRING_ACCUMULATOR_IDX, ++depth);
-
-    int tsrc = STRING_ACCUMULATOR_IDX;
-
-    if (depth > CONCAT_SIZE) {
-	lua_newtable(L);
-	int tdst = lua_gettop(L);
-	while (depth > CONCAT_SIZE) {
-	    int dst = 1, count = 0;
-	    for (int src=1; src <= depth; src++) {
-		lua_rawgeti(L, tsrc, src);
-		lua_pushnil(L);
-		lua_rawseti(L, tsrc, src);
-		if (++count >= CONCAT_SIZE) {
-		    lua_concat(L, CONCAT_SIZE); 
-		    lua_rawseti(L, tdst, dst++);
-		    count = 0;
-		}
-	    }
-	    if (count) {
-		lua_concat(L, count);
-		lua_rawseti(L, tdst, dst++);
-	    }
-	    int tmp = tsrc;
-	    tsrc = tdst;
-	    tdst = tmp;
-	    depth = dst - 1;
-	}
-    }
-
-    for (int i = 1; i <= depth; i++) {
-	lua_rawgeti(L, tsrc, i);
-	lua_pushnil(L);
-	lua_rawseti(L, tsrc, i);
-    }
-    lua_concat(L, depth);
-}
 
 // Lower order tag for multibyte numbers
 #define NUMTYPE_DOUBLE 31
@@ -162,8 +107,6 @@ static void buf_pushresult(struct buffer *buf)
 #define VALUE_NIL 69
 #define VALUE_FALSE 70
 #define VALUE_TRUE 71
-
-#define STRLIT(VAL) (char []){VAL}
 
 // Types aside from constants ()
 #define TYPE_NUMBER 0
@@ -277,7 +220,7 @@ static unsigned int thaw_num(const uint8_t *src, double *dst,
 
 static int use_or_make_ref(lua_State *L, int index,
 			   unsigned int *seen_object_count,
-			   struct buffer *catbuf)
+			   struct strbuff *catbuf)
 {
     uint8_t numbuf[9];
     size_t len;
@@ -285,7 +228,7 @@ static int use_or_make_ref(lua_State *L, int index,
     lua_rawget(L, SEEN_OBJECT_IDX);
     if (!lua_isnil(L, -1)) {
 	len = freeze_uint(lua_tointeger(L, -1), TYPE_REF, numbuf);
-	buf_addlstring(catbuf, (void *)numbuf, len);
+	strbuff_addlstring(catbuf, (void *)numbuf, len);
 	lua_pop(L, 1);
 	return 1;
     }
@@ -300,7 +243,7 @@ static void freeze_recursive(lua_State *L,
 			     int index,
 			     unsigned int *seen_object_count,
 			     unsigned int *seen_upvalue_count,
-			     struct buffer *catbuf,
+			     struct strbuff *catbuf,
 			     bool merge_dupl_strs,
 			     bool strip_debug)
 {
@@ -313,27 +256,23 @@ static void freeze_recursive(lua_State *L,
 
     switch(lua_type(L, index)) {
     case LUA_TNIL:
-	buf_addlstring(catbuf, STRLIT(VALUE_NIL), 1);
+	strbuff_addchar(catbuf, VALUE_NIL);
 	return;
     case LUA_TBOOLEAN:
-	buf_addlstring(catbuf,
-			lua_toboolean(L, index)
-			? STRLIT(VALUE_TRUE)
-			: STRLIT(VALUE_FALSE),
-			1);
+	strbuff_addchar(catbuf,
+			lua_toboolean(L, index) ? VALUE_TRUE : VALUE_FALSE);
 	return;
     case LUA_TNUMBER:
 	len = freeze_num(lua_tonumber(L, index), numbuf);
-	buf_addlstring(catbuf, (void *)numbuf, len);
+	strbuff_addlstring(catbuf, (void *)numbuf, len);
 	return;
     case LUA_TSTRING:
 	if (!merge_dupl_strs ||
 	    !use_or_make_ref(L, index, seen_object_count, catbuf)) {
-	    len = lua_objlen(L, index);
-	    len = freeze_uint(len, TYPE_STRING, numbuf);
-	    buf_addlstring(catbuf, (void *)numbuf, len);
 	    const char *str = lua_tolstring(L, index, &len);
-	    buf_addlstring(catbuf, str, len);
+	    strbuff_addlstring(catbuf, (void *)numbuf,
+			       freeze_uint(len, TYPE_STRING, numbuf));
+	    strbuff_addlstring(catbuf, str, len);
 	}
 	return;
     case LUA_TTABLE:
@@ -344,12 +283,13 @@ static void freeze_recursive(lua_State *L,
 	    } else {
 		unsigned int array_size = lua_objlen(L, index);
 		len = freeze_uint(array_size, TYPE_TABLE, numbuf);
-		buf_addlstring(catbuf, (void *)numbuf, len);
+		strbuff_addlstring(catbuf, (void *)numbuf, len);
 		for (int i = 1; i <= array_size; i++) {
 		    lua_rawgeti(L, index, i);
 		    freeze_recursive(L, -1, seen_object_count,
 				     seen_upvalue_count, catbuf,
 				     merge_dupl_strs, strip_debug);
+
 		    lua_pop(L, 1);
 		}
 		
@@ -367,7 +307,7 @@ static void freeze_recursive(lua_State *L,
 				     merge_dupl_strs, strip_debug);
 		    lua_pop(L, 1);
 		}
-		buf_addlstring(catbuf, STRLIT(TABLE_END), 1);
+		strbuff_addchar(catbuf, TABLE_END);
 	    }
 	}
 	return;
@@ -375,7 +315,7 @@ static void freeze_recursive(lua_State *L,
 	if (!use_or_make_ref(L, index, seen_object_count, catbuf)) {
 	    if (lua_iscfunction(L, index))
 		break;
-	    buf_addlstring(catbuf, STRLIT(LUA_CLOSURE), 1);
+	    strbuff_addchar(catbuf, LUA_CLOSURE);
 	    lua_pushvalue(L, index);
 	    lua_pushboolean(L, strip_debug);
 	    lua_pushvalue(L, lua_upvalueindex(1));
@@ -393,7 +333,7 @@ static void freeze_recursive(lua_State *L,
 		if (!lua_isnil(L, -1)) {
 		    len =
 			freeze_uint(lua_tointeger(L, -1), TYPE_UVREF, numbuf);
-		    buf_addlstring(catbuf, (void *)numbuf, len);
+		    strbuff_addlstring(catbuf, (void *)numbuf, len);
 		    lua_pop(L, 2);
 		} else {
 		    lua_pop(L, 1);
@@ -401,7 +341,7 @@ static void freeze_recursive(lua_State *L,
 		    lua_pushinteger(L, ++*seen_upvalue_count);
 		    lua_rawset(L, SEEN_UPVALUE_IDX);
 		    len = freeze_uint(upvalue_index, TYPE_UINT, numbuf);
-		    buf_addlstring(catbuf, (void *)numbuf, len);
+		    strbuff_addlstring(catbuf, (void *)numbuf, len);
 		    freeze_recursive(L, -1, seen_object_count,
 				     seen_upvalue_count, catbuf,
 				     merge_dupl_strs, strip_debug);
@@ -409,7 +349,7 @@ static void freeze_recursive(lua_State *L,
 		}
 		upvalue_index++;
 	    }
-	    buf_addlstring(catbuf, STRLIT(TABLE_END), 1);
+	    strbuff_addchar(catbuf, TABLE_END);
 	}
 	return;
     default:
@@ -435,13 +375,13 @@ static void freeze_recursive(lua_State *L,
 	lua_replace(L, replace_ix);
 	lua_settop(L, replace_ix);
 	freeze_recursive(L, -1, seen_object_count,
-				     seen_upvalue_count, catbuf,
-				     merge_dupl_strs, strip_debug);
+			 seen_upvalue_count, catbuf,
+			 merge_dupl_strs, strip_debug);
 	return;
     }
     if (lua_iscfunction(L, -1))
 	luaL_error(L, "Constructor must be a Lua function!");
-    buf_addlstring(catbuf, STRLIT(CONSTRUCTOR), 1);
+    strbuff_addchar(catbuf, CONSTRUCTOR);
     freeze_recursive(L, -1, seen_object_count, seen_upvalue_count,
 		     catbuf, merge_dupl_strs, strip_debug);
     lua_pop(L, 1);
@@ -463,11 +403,96 @@ bugout: {
 
 int freezer_freeze(lua_State *L)
 {
-    switch (lua_gettop(L)) {
-    case 0:
-	lua_pushnil(L);    // Empty source
-    case 1:
-	lua_newtable(L);   // Empty initial seen objects
+    struct strbuff catbuf;
+    unsigned int seen_object_count = 0;
+
+    // Handle trivial cases
+    switch(lua_type(L, 1)) {
+    case LUA_TNONE:
+    case LUA_TNIL:
+	lua_pushlstring(L, STRLIT(VALUE_NIL), 1);
+	break;
+    case LUA_TBOOLEAN:
+	lua_pushlstring(L,
+			lua_toboolean(L, 1) ?
+			STRLIT(VALUE_TRUE) : STRLIT(VALUE_FALSE),
+			1);
+	break;
+    case LUA_TNUMBER: {
+	char numbuf[9];
+	lua_pushlstring(L, numbuf,
+			freeze_num(lua_tonumber(L, 1), (uint8_t *)numbuf));
+	break;
+    }
+    case LUA_TSTRING: {
+	size_t len;
+	char numbuf[9];
+	lua_newtable(L);
+	lua_replace(L, 2);
+	strbuff_buffinit (L, 2, &catbuf);
+	const char *str = lua_tolstring(L, 1, &len);
+	strbuff_addlstring(&catbuf, (void *)numbuf,
+			   freeze_uint(len, TYPE_STRING, (uint8_t *)numbuf));
+	strbuff_addlstring(&catbuf, str, len);
+	strbuff_pushresult(&catbuf);
+	break;
+    }
+    case LUA_TTABLE: {
+	lua_pushnil(L);
+	if (!lua_next(L, 1)) {
+	    lua_newtable(L);
+	    strbuff_buffinit (L, 2, &catbuf);
+	    strbuff_addchar(&catbuf, TYPE_TABLE);
+	    strbuff_addchar(&catbuf, TABLE_END);
+	    strbuff_pushresult(&catbuf);
+	    break;
+	}
+	lua_pop(L, 2);
+    }
+    default:
+	goto complex_type;
+    }
+
+#ifdef MAGIC_COOKIE
+    lua_pushlstring(L, magic_header, sizeof(magic_header));
+    lua_insert(L, -2);
+    lua_concat(L, 2);
+#endif
+    return 1;
+
+complex_type:
+    strbuff_buffinit (L, STRING_ACCUMULATOR_IDX, &catbuf);
+#ifdef MAGIC_COOKIE
+    strbuff_addlstring(&catbuf, (void *)magic_header, sizeof(magic_header));
+#endif
+
+    if (lua_gettop(L) == 1)
+	lua_newtable(L); // No preload
+    else if (!lua_istable(L, 2)) {
+	lua_newtable(L); // ditto
+	lua_replace(L, 2);
+    } else {
+	seen_object_count = lua_objlen(L, 2);
+	lua_newtable(L); // Seen object table
+	int top = lua_gettop(L);
+	if (seen_object_count > 0) {
+	    uint8_t numbuf[9];
+
+	    strbuff_addchar(&catbuf, ALLOCATE_REFS);
+	    int len = freeze_uint(seen_object_count, TYPE_UINT, numbuf);
+	    strbuff_addlstring(&catbuf, (void *)numbuf, len);
+
+	    for (unsigned int i = 1; i <= seen_object_count; i++) {
+		lua_rawgeti(L, 2, i);
+		if (lua_isnil(L, -1)) {
+		    lua_pop(L, 1);
+		    break;;
+		}
+		lua_pushinteger(L, i);
+		lua_rawset(L, top);
+	    }
+	}
+	lua_replace(L, 2);
     }
 
     bool merge_dupl_strs;
@@ -480,41 +505,12 @@ int freezer_freeze(lua_State *L)
     }
     lua_settop(L, 3);
 
-    lua_newtable(L); // Seen object table
     lua_newtable(L); // Seen upvalue table
     lua_newtable(L); // String accumulator
-    unsigned int seen_object_count = 0;
     unsigned int seen_upvalue_count = 0;
 
-    struct buffer catbuf;
-    buf_buffinit (L, &catbuf);
-
-#ifdef MAGIC_COOKIE
-    buf_addlstring(&catbuf, (void *)magic_header, sizeof(magic_header));
-#endif
-    
     if (merge_dupl_strs)
-	buf_addlstring(&catbuf, STRLIT(MERGE_DUPL_STRS), 1);
-
-    // Build initial seen objects
-    seen_object_count = lua_objlen(L, 2);
-    if (seen_object_count > 0) {
-	uint8_t numbuf[9];
-	
-	buf_addlstring(&catbuf, STRLIT(ALLOCATE_REFS), 1);
-	int len = freeze_uint(seen_object_count, TYPE_UINT, numbuf);
-	buf_addlstring(&catbuf, (void *)numbuf, len);
-
-	for (unsigned int i = 1; i <= seen_object_count; i++) {
-	    lua_rawgeti(L, 2, i);
-	    if (lua_isnil(L, -1)) {
-		lua_pop(L, 1);
-		break;;
-	    }
-	    lua_pushinteger(L, i);
-	    lua_rawset(L, SEEN_OBJECT_IDX);
-	}
-    }
+	strbuff_addchar(&catbuf, MERGE_DUPL_STRS);
 
     freeze_recursive(L,
 		     1,
@@ -524,7 +520,7 @@ int freezer_freeze(lua_State *L)
 		     merge_dupl_strs,
 		     strip_debug);
 
-    buf_pushresult(&catbuf);
+    strbuff_pushresult(&catbuf);
     return 1;
 }
 
@@ -545,8 +541,6 @@ static uint32_t thaw_string_header(lua_State *L, uint8_t **src,
     uint8_t type;
     int used = thaw_uint(*src, &string_len, &type, *available);
     if (!used) luaL_error(L, end_of_data);
-    if (type != TYPE_STRING)
-	luaL_error(L, "Expecting string");
     *src += used;
     *available -= used;
     if (string_len > *available) luaL_error(L, end_of_data);
@@ -589,6 +583,8 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 			   seen_upvalue_count, merge_dupl_strs);
 	    code = lua_tolstring(L, -1, &codelen);
 	} else {
+	    if ((**src & 0xE0) != TYPE_STRING)
+		luaL_error(L, "Expecting string");
 	    codelen = thaw_string_header(L, src, available);
 	    code = (const char *)*src;
 	    *src += codelen;
@@ -721,18 +717,6 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 
 static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
 {
-    bool merge_dupl_strs = false;
-    
-    if (lua_gettop(L) == 1) {
-	lua_newtable(L);   // Empty initial seen objects
-    } else {
-	luaL_checktype(L, 2, LUA_TTABLE);
-	lua_settop(L, 2);
-    }
-
-    uint32_t seen_object_count = 0;
-    uint32_t seen_upvalue_count = 0;
-
 #ifdef MAGIC_COOKIE
     size_t magiclen;
     if (len < sizeof(magic_header) ||
@@ -742,7 +726,71 @@ static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
     len -= sizeof(magic_header);
     buf += sizeof(magic_header);
 #endif
-    
+
+    // Thaw trivial values.
+    if (len > 0) {
+	switch(*buf) {
+	case VALUE_NIL:
+	    len--;
+	    lua_pushnil(L);
+	    break;
+	case VALUE_TRUE:
+	    len--;
+	    lua_pushboolean(L, true);
+	    break;
+	case VALUE_FALSE:
+	    len--;
+	    lua_pushboolean(L, false);
+	    break;
+	case TYPE_TABLE:
+	    if (len == 2 && buf[1] == TABLE_END) {
+		lua_newtable(L);
+		len = 0;
+		break;
+	    }
+	default:
+	    switch(*buf & 0xE0) {
+	    case TYPE_STRING: {
+		size_t avail = len;
+		uint32_t slen = thaw_string_header(L, &buf, &avail);
+		lua_pushlstring(L, (void *)buf, slen);
+		len = avail - slen;
+		break;
+	    }
+	    case TYPE_NUMBER:
+	    case TYPE_NEGATIVE_INT: { // Number type.
+		double result;
+		int used = thaw_num(buf, &result, len);
+		if (!used)
+		    luaL_error(L, end_of_data);
+		len -= used;
+		lua_pushnumber(L, result);
+		break;
+	    }
+	    default:
+		goto complex_type;
+	    }
+	}
+
+	if (len != 0)
+	    luaL_error(L, "extra bytes");
+	return 1;
+    }
+
+complex_type:
+
+    if (lua_gettop(L) == 1) {
+	lua_newtable(L);   // Empty initial seen objects
+    } else {
+	luaL_checktype(L, 2, LUA_TTABLE);
+	lua_settop(L, 2);
+    }
+
+    bool merge_dupl_strs = false;
+
+    uint32_t seen_object_count = 0;
+    uint32_t seen_upvalue_count = 0;
+
     if (len > 0 && *buf == MERGE_DUPL_STRS) {
 	buf++;
 	len--;
@@ -803,7 +851,6 @@ int freezer_thaw(lua_State *L)
     luaL_checktype(L, 1, LUA_TSTRING);
     size_t len;
     uint8_t *buf = (uint8_t *)lua_tolstring(L, 1, (size_t *)&len);
-
     return freezer_thaw_something(L, buf, len);
 }
 
