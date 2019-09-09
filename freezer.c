@@ -321,9 +321,13 @@ static void freeze_recursive(lua_State *L,
 	    lua_pushvalue(L, lua_upvalueindex(1));
 	    lua_insert(L, -3);
 	    lua_call(L, 2, 1);
-	    
-	    freeze_recursive(L, -1, seen_object_count, seen_upvalue_count,
-			     catbuf, merge_dupl_strs, strip_debug);
+	    if (!merge_dupl_strs ||
+		!use_or_make_ref(L, -1, seen_object_count, catbuf)) {
+		const char *str = lua_tolstring(L, -1, &len);
+		strbuff_addlstring(catbuf, (void *)numbuf,
+				   freeze_uint(len, TYPE_STRING, numbuf));
+		strbuff_addlstring(catbuf, str, len);
+	    }
 	    lua_pop(L, 1);
 	    unsigned int upvalue_index = 1;
 	    while (lua_getupvalue(L, index, upvalue_index)) {

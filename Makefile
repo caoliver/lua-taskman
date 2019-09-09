@@ -3,7 +3,7 @@ LIBPATH=$(PREFIX)/lib/lua/5.1
 LUAPATH=$(PREFIX)/share/lua/5.1
 INCPATH=$(PREFIX)/include/lua/5.1
 CFLAGS+=-fPIC -I$(INCPATH) -I/usr/local/include -pthread
-CFLAGS+=-Wall -Wno-parentheses -fomit-frame-pointer -std=c99 -O2
+CFLAGS+=-Wall -Wno-parentheses -fomit-frame-pointer -std=c99 -O3
 CFLAGS+=-D_POSIX_C_SOURCE=200112L
 CFLAGS+=-mtune=generic
 #CFLAGS+=-march=native -mfloat-abi=hard
