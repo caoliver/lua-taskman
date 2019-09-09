@@ -586,6 +586,8 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 	if (merge_dupl_strs) {
 	    thaw_recursive(L, src, available, seen_object_count,
 			   seen_upvalue_count, merge_dupl_strs);
+	    if (lua_type(L, -1) != LUA_TSTRING)
+		luaL_error(L, invalid_data);
 	    code = lua_tolstring(L, -1, &codelen);
 	} else {
 	    if ((**src & 0xE0) != TYPE_STRING)
