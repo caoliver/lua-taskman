@@ -506,7 +506,8 @@ complex_type:
     if (lua_gettop(L) >= 5) {
       lua_settop(L, 5);
 	lua_insert(L, 3);
-    }
+    } else
+	lua_pushnil(L);
     lua_settop(L, 3);
 
     lua_newtable(L); // Seen upvalue table
