@@ -18,10 +18,12 @@ all: taskman.so freezer.so
 
 strbuff.so: strbuff.o
 	gcc $(LDFLAGS) -Wl,-soname,lua-strbuff.so.$(VER) -o $@ $^
+	ldconfig -N -l $@
 
 freezer.so: freezer.o strbuff.so
-	gcc $(LDFLAGS) -Wl,-soname,lua-freezer.so.$(VER) -o $@ $^
-	lua fz-test.lua
+	gcc $(LDFLAGS) -Wl,-soname,lua-freezer.so.$(VER) \
+	-Wl,-rpath=$(LIBPATH) -o $@ $^
+	LD_LIBRARY_PATH=$(PWD) lua fz-test.lua
 
 taskman.so: taskman.o mmaputil.so freezer.so
 	gcc -Wl,-soname,lua-taskman.so.$(VER) $(LDFLAGS) \

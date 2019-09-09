@@ -22,11 +22,6 @@ function stopwatch()
    end
 end
 
-td={one='alfred', two='basil', three='clara', four='desmond'}
-td={one='alfred', two='alfred', three='alfred', four='alfred'}
-
-td = { a='a', b='b', c='c', d='d', hop='jump', skip='foo', answer=42 }
-
 local times
 scale=1
 
@@ -165,7 +160,8 @@ td={aardvark='one',bat='two',cheetah='three',dog='four',elephant='five',
 ebench('string->string', tdat)
 dbench('string->string', tdat)
 
-td={aardvark='animal',bat='animal',cheetah='animal',dog='animal',    elephant='animal', fish='animal',giraffe='animal'}
+td={aardvark='animal',bat='animal',cheetah='animal',dog='animal',
+    elephant='animal', fish='animal',giraffe='animal'}
 ebench('string->string dup values', tdat)
 dbench('string->string dup values', tdat)
 
