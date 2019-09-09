@@ -720,6 +720,8 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
     }
 }
 
+static char extra[] = "Extra bytes";
+
 static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
 {
 #ifdef MAGIC_COOKIE
@@ -778,7 +780,7 @@ static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
 	}
 
 	if (len != 0)
-	    luaL_error(L, "extra bytes");
+	    luaL_error(L, extra);
 	return 1;
     }
 
@@ -829,7 +831,7 @@ complex_type:
     thaw_recursive(L, &buf, &len, &seen_object_count,
 		   &seen_upvalue_count, merge_dupl_strs);
     
-    if (len) luaL_error(L, "Extra bytes");
+    if (len) luaL_error(L, extra);
 
     return 1;
 }
