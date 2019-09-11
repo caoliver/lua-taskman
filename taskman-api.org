@@ -13,42 +13,56 @@ tid = name | task | task,nonce
 
 ** shutdown()
 * Tasks
-** create_task{task_specification} -> tid
-*** task_specification
-    | field       | mandatory | value     | use                       |
-    |-------------+-----------+-----------+---------------------------|
-    | program     | yes       | ff or str | program to run:           |
-    |             |           |           | fn captures upvals,       |
-    |             |           |           | ":file" for file,         |
-    |             |           |           | otherwise code string.    |
-    | queue_size  | no        | int       | message queue size        |
-    | task_name   | no        | str       | task id                   |
-    | show_errors | no        | bool      | display on stderr (async) |
-    | show_exits  | no        | bool      | display on stderr (async) |
+  create_task{task_specification, task arguments...} -> tid
+  get_my_name() -> name, task, nonce
+  lookup_task(tid) -> nil | task, nonce
+  interrupt_task(hard, tid) -> task
+  interrupt_all(hard) - except caller and main
+  cancel_task(tid) -> task
+  cancel_all() - except caller and main
+  set_cancel(enable, deferred) -> old_enable, old_deferred
+** task_specification
+  | field       | mandatory | value     | use                       |
+  |-------------+-----------+-----------+---------------------------|
+  | program     | yes       | ff or str | program to run:           |
+  |             |           |           | fn captures upvals,       |
+  |             |           |           | ":file" for file,         |
+  |             |           |           | otherwise code string.    |
+  | queue_size  | no        | int       | message queue size        |
+  | task_name   | no        | str       | task id                   |
+  | show_errors | no        | bool      | display on stderr (async) |
+  | show_exits  | no        | bool      | display on stderr (async) |
 
-indexed elements are passed as function arguments.
-
-** get_my_name() -> name, task, nonce
-** lookup_task(tid) -> nil | task, nonce
-** interrupt_task(hard, tid) -> task
-** interrupt_all(hard) - except caller and main
-** cancel_task(tid) -> task
-** cancel_all() - except caller and main
-** set_cancel(enable, deferred) -> old_enable, old_deferred
-* flags
+  Indexed elements are passed as function arguments.
+* Flags
   Private flags range from 0 to 30.
-** change_private_flag(flag, state, tid)
-** broadcast_private_flag(flag, state)
-** private_flag(flag)
-** get_private_word()
-** change_global_flag(flag, state)
-** global_flag(flag)
-** get_global_flag_word()
-** set_immunity(state[, tid])
-* messages
-** seconds_from_now(seconds) -> timestamp/opaque
+  change_private_flag(flag, state, tid)
+  broadcast_private_flag(flag, state)
+  private_flag(flag)
+  get_private_word()
+  change_global_flag(flag, state)
+  global_flag(flag)
+  get_global_flag_word()
+  set_immunity(state[, tid])
+* Timestamps
+  Numsecs is a number of seconds as an IEEE754 double
+  timestamp +/- numsecs -> timestamp
+  timestamp - timestamp -> numsecs
+  timestamp + timestamp -> (exact)
+  -timestamp -> timestamp (exact)
+  timestamp * integer -> timestamp (exact)
+  #timestamp -> numsecs
+
+  create_timestamp(numsecs) -> timestamp
+  create_timestamp(seconds, nanoseconds) -> timestamp (exact)
+  timestamp_parts(timestamp) -> seconds,nanoseconds (exact)
+  now() -> timestamp (exact)
+  sleep(numsecs or timestamp) -> numsecs (wake latency)
+* Messages
 ** get_message() -> nil | message, type, { name, } task, nonce
-** wait_message(optional timestamp) -> same as get_message
+** wait_message(optional timeout)
+   With no argument, wait indefinitely.
+   Timeout may be a timestamp or number(floating) of seconds.
 ** send_message(message, tid)
 ** send_message_with_type(message, type, tid)
 ** broadcast_message(message, type, channel)

@@ -776,8 +776,30 @@ static int initialize(lua_State *L,
 
 LUAFN(timestamp_name)
 {
-    lua_pushfstring(L, "timestamp (%p)", lua_topointer(L, 1));
+    char timestr[32];
+    struct timespec *ts = lua_touserdata(L, 1);
+    char sign =  ts->tv_sec < 0 || ts->tv_nsec < 0;
+    snprintf(timestr, 32, "%s%ld.%09ld", sign ? "-" : "",
+	     ts->tv_sec < 0 ? -ts->tv_sec : ts->tv_sec,
+	     ts->tv_nsec < 0 ? -ts->tv_nsec : ts->tv_nsec);
+    lua_pushfstring(L, "timestamp (%s)", timestr);
     return 1;
+}
+
+static inline __attribute__((always_inline))
+void add_time_delta(struct timespec *newtime, struct timespec *oldtime,
+		    double delta)
+{
+    delta += oldtime->tv_sec + 1E-9L*oldtime->tv_nsec;
+    newtime->tv_sec = delta;
+    newtime->tv_nsec = 1E9L*(delta - newtime->tv_sec);
+}
+
+static inline __attribute__((always_inline))
+double time_diff(struct timespec *time1, struct timespec *time2)
+{
+    return time1->tv_sec - time2->tv_sec +
+	1E-9L*(time1->tv_nsec - time2->tv_nsec);
 }
 
 struct task_cache_entry {
@@ -1182,27 +1204,156 @@ LUAFN(set_immunity)
     return 1;
 }
 
+/**************/
+/* Timestamps */
+/**************/
+
+
+LUAFN(now)
+{
+    struct timespec *ts;
+    ts = lua_newuserdata(L, sizeof(*ts));
+    clock_gettime(CLOCK_REALTIME, ts);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+static char badtime[] = "Bad time spec";
+
+LUAFN(sleep)
+{
+    struct timespec ts, *sleep_until = &ts;
+    if (lua_isnumber(L, 1)) {
+	clock_gettime(CLOCK_REALTIME, &ts);
+	add_time_delta(&ts, &ts, lua_tonumber(L, 1));
+    } else if (lua_getmetatable(L, 1) &&
+	       lua_rawequal(L, -1, lua_upvalueindex(1)))
+	sleep_until = lua_touserdata(L, -2);
+    else
+	luaL_error(L, badtime);
+
+    lua_pushboolean(L, clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME,
+                                       sleep_until, NULL) == 0);
+    struct timespec timenow;
+    clock_gettime(CLOCK_REALTIME, &timenow);
+    lua_pushnumber(L, time_diff(&timenow, sleep_until)); return 2;
+}
+
+LUAFN(time_difference)
+{
+    struct timespec *time1 = lua_touserdata(L, 1);
+    struct timespec *time2;
+    if (lua_isnumber(L, 2)) {
+       time2 = lua_newuserdata(L, sizeof(*time2));
+       add_time_delta(time2, time1, -lua_tonumber(L, 2));
+       lua_getmetatable(L, 1);
+       lua_setmetatable(L, -2);
+       return 1;
+    }
+    lua_getmetatable(L, 1);
+    if (!lua_getmetatable(L, 2) || !lua_rawequal(L, -1, -2))
+	luaL_error(L, badtime);
+    time2 = lua_touserdata(L, 2);
+    lua_pushnumber(L, time_diff(time1, time2));
+    return 1;
+}
+
+LUAFN(time_negate)
+{
+    struct timespec *time1 = lua_touserdata(L, 1);
+    struct timespec *time2 = lua_newuserdata(L, sizeof(*time2));
+    time2->tv_sec = -time1->tv_sec;
+    time2->tv_nsec = -time1->tv_nsec;
+    lua_getmetatable(L, 1);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+LUAFN(time_sum)
+{
+    struct timespec *time1 = lua_touserdata(L, 1);
+    struct timespec *time2;
+    if (lua_isnumber(L, 2)) {
+       time2 = lua_newuserdata(L, sizeof(*time2));
+       add_time_delta(time2, time1, lua_tonumber(L, 2));
+       lua_getmetatable(L, 1);
+       lua_setmetatable(L, -2);
+       return 1;
+    }
+    lua_getmetatable(L, 1);
+    if (!lua_getmetatable(L, 2) || !lua_rawequal(L, -1, -2))
+	luaL_error(L, badtime);
+    time2 = lua_touserdata(L, 2);
+    struct timespec *timesum = lua_newuserdata(L, sizeof(*timesum));
+    timesum->tv_sec = time2->tv_sec + time1->tv_sec;
+    timesum->tv_nsec = time2->tv_nsec + time1->tv_nsec;
+    if (timesum->tv_nsec > 1000000000) {
+	timesum->tv_sec++;
+	timesum->tv_nsec -= 1000000000;
+    } else if (timesum->tv_nsec < -1000000000) {
+	timesum->tv_sec--;
+	timesum->tv_nsec += 1000000000;
+    }
+    lua_getmetatable(L, 1);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+LUAFN(create_timestamp)
+{
+    double arg1 = luaL_checknumber(L, 1);
+    bool none = lua_isnone(L, 2);
+    struct timespec *time = lua_newuserdata(L, sizeof(*time));
+    time->tv_sec = arg1;
+    if (none)
+	time->tv_nsec = 1E9L*(arg1 - time->tv_sec);
+    else {
+	time->tv_nsec = luaL_checknumber(L, 2);
+	if (time->tv_sec < 0 || time->tv_nsec < 0) {
+	    time->tv_nsec = time->tv_nsec < 0 ? time->tv_nsec : -time->tv_nsec;
+	    time->tv_sec = time->tv_sec < 0 ? time->tv_sec : -time->tv_sec;
+	}
+    }
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+LUAFN(timestamp_parts)
+{
+    if (!lua_getmetatable(L, 1) || !lua_rawequal(L, -1, -1))
+	luaL_error(L, badtime);
+    struct timespec *time = lua_touserdata(L, 1);
+    lua_pushnumber(L, time->tv_sec);
+    lua_pushnumber(L, time->tv_nsec);
+    return 2;
+}
+
+LUAFN(time_scale)
+{
+    long scale_factor = luaL_checkinteger(L, 2);
+    struct timespec *time1 = lua_touserdata(L, 1);
+    struct timespec *time2 = lua_newuserdata(L, sizeof(*time2));
+    time2->tv_sec = scale_factor * time1->tv_sec;
+    time2->tv_nsec = (scale_factor * time1->tv_nsec);
+    time2->tv_nsec %= 1000000000;
+    time2->tv_sec += (scale_factor * time1->tv_nsec)/1000000000;
+    lua_getmetatable(L, 1);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+LUAFN(time_as_double)
+{
+    struct timespec *time = lua_touserdata(L, 1);
+    lua_pushnumber(L, time->tv_sec + 1E-9L*time->tv_nsec);
+    return 1;
+}
 
 /************/
 /* Messages */
 /************/
-
-LUAFN(seconds_from_now)
-{
-    double interval = lua_tonumber(L, 1);
-    if (interval < 0)
-	interval = 0;
-    struct timespec *ts;
-    ts = lua_newuserdata(L, sizeof(*ts));
-    clock_gettime(CLOCK_REALTIME, ts);
-    interval += ts->tv_sec + (double)1E-9*ts->tv_nsec;
-    ts->tv_sec = interval;
-    ts->tv_nsec = 1E9*(interval - ts->tv_sec);
-    lua_pushvalue(L, lua_upvalueindex(1));
-    lua_setmetatable(L, -2);
-    lua_replace(L, 1);
-    return 1;
-}
 
 LUAFN(get_message)
 {
@@ -1220,16 +1371,21 @@ LUAFN(wait_message)
     if (lua_isnoneornil(L, 1))
 	sem_wait(&tasks[my_index].incoming_sem);
     else {
-	if (lua_isnumber(L, 1))
-	    CALL_LUAFN(seconds_from_now);
-	if (!lua_getmetatable(L, 1) ||
-	    !lua_rawequal(L, -1, lua_upvalueindex(1)))
-	    luaL_error(L, "Bad time spec");
-	struct timespec *ts = lua_touserdata(L, -2);
-	if (sem_timedwait(&tasks[my_index].incoming_sem, ts) < 0)
+	struct timespec time, *sleep_until = &time;
+	if (lua_isnumber(L, 1)) {
+	    clock_gettime(CLOCK_REALTIME, &time);
+	    add_time_delta(&time, &time, lua_tonumber(L, 1));
+	} else if (lua_getmetatable(L, 1) &&
+		   lua_rawequal(L, -1, lua_upvalueindex(1)))
+	    sleep_until = lua_touserdata(L, -2);
+	else
+	    luaL_error(L, badtime);
+
+	if (sem_timedwait(&tasks[my_index].incoming_sem, sleep_until) < 0)
 	    return 0;
 	lua_settop(L, 0);
     }
+
     int rc = getmsg(L);
     return rc;
 }
@@ -1436,14 +1592,31 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     STORECCLOSURE(create_task, 1, -2);
 
 
-    // Add metatable for timestamps to wait_message() and seconds_from_now().
+    // Add metatable for timestamps to sleep(), wait_message(), now(),
+    // and create_timestamp().
     lua_newtable(L);
     lua_pushstring(L, "Private");
     lua_setfield(L, -2, "__metatable");
     lua_pushcfunction(L, LUAFN_NAME(timestamp_name));
     lua_setfield(L, -2, "__tostring");
+    lua_pushcfunction(L, LUAFN_NAME(time_sum));
+    lua_setfield(L, -2, "__add");
+    lua_pushcfunction(L, LUAFN_NAME(time_difference));
+    lua_setfield(L, -2, "__sub");
+    lua_pushcfunction(L, LUAFN_NAME(time_negate));
+    lua_setfield(L, -2, "__unm");
+    lua_pushcfunction(L, LUAFN_NAME(time_scale));
+    lua_setfield(L, -2, "__mul");
+    lua_pushcfunction(L, LUAFN_NAME(time_as_double));
+    lua_setfield(L, -2, "__len");
     lua_pushvalue(L, -1);
-    STORECCLOSURE(seconds_from_now, 1, -3);
+    STORECCLOSURE(create_timestamp, 1, -3);
+    lua_pushvalue(L, -1);
+    STORECCLOSURE(timestamp_parts, 1, -3);
+    lua_pushvalue(L, -1);
+    STORECCLOSURE(now, 1, -3);
+    lua_pushvalue(L, -1);
+    STORECCLOSURE(sleep, 1, -3);
     STORECCLOSURE(wait_message, 1, -2);
 
     // Users of the validate_task have the task name -> index cache

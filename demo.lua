@@ -3,13 +3,13 @@ function kill_some(i)
    -- a distinct lua_State.
    t=require'taskman'
    f=require 'ffi'
-   f.cdef [[ void usleep(int); void pause(); ]]
+   f.cdef [[ void pause(); ]]
    -- Tail main I'm awake.
    t.send_message('', ':main:')
    if i==3 then
       
       -- Wait 1/4sec before starting the fireworks.
-      f.C.usleep(250000);
+      t.sleep(0.25)
       
       -- Cancel everyone but myself and the main task.
       t.cancel_all()
@@ -17,7 +17,7 @@ function kill_some(i)
       -- but wait a minute.  Let's be uncivil and busy loop.
       while true do end
    elseif i==4 then
-      f.C.usleep(400000)
+      t.sleep(0.4)
       t.send_message('done', ':main:')
       f.C.pause()
    elseif i~=5 and i~=1 then
@@ -49,7 +49,7 @@ t.status()
 
 -- Catch the first four exits.
 -- Should take far less than a second.
-ts=t.seconds_from_now(1)
+ts=t.now()+1
 for i=1,4 do t.wait_message(ts) end
 
 -- Ignore child exit messages
