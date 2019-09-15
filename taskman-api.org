@@ -93,3 +93,11 @@ tid = name | task | task,nonce
 * Status display (async)
   status(bool) -- Show task statuson stderr; true to list unnamed.
   set_display_create_errors(true) -- Show create failues on stderr.
+* Guaranteeing taskman shutdown at exit
+  To be sure all tasks exit cleanly if the main task encounters a fault
+  or exit in a non-interactive script, use the newproxy hack:
+
+  taskman = setmetatable(require 'taskman', {__gc=newproxy(true)})
+  getmetatable(getmetatable(t).__gc).__gc = taskman.shutdown
+
+  This will do nothing if shutdown has already been called.
