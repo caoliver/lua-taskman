@@ -98,6 +98,6 @@ tid = name | task | task,nonce
   or exit in a non-interactive script, use the newproxy hack:
 
   taskman = setmetatable(require 'taskman', {__gc=newproxy(true)})
-  getmetatable(getmetatable(t).__gc).__gc = taskman.shutdown
+  getmetatable(getmetatable(taskman).__gc).__gc = taskman.shutdown
 
   This will do nothing if shutdown has already been called.
