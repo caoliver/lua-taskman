@@ -9,9 +9,9 @@ An omitted (or nil) tid refers to calling task.
 
   task_limit: maximum number of tasks allowed.
 
-  control_channel_bytes: size of housekeeper message queue
+  control_channel_size: size of housekeeper message queue
 
-  main_channel_bytes: size of :main: message queue
+  main_queue_size: size of :main: message queue
 
 ** shutdown()
 * Tasks

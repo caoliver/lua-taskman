@@ -26,7 +26,6 @@
 // This is a uint16_t.  Maybe make this smaller.
 #define MAX_TASKS 65536
 #define MIN_CONTROL_BUFFER_SIZE (1<<18)
-//#define MIN_CLIENT_BUFFER_SIZE (1<<18)
 #define MIN_CLIENT_BUFFER_SIZE (1<<18)
 
 // Wake 50 times per second.
@@ -925,9 +924,9 @@ LUAFN(initialize)
 	lua_settop(L, 1);
 	lua_getfield(L, 1, "task_limit");
 	task_limit = lua_tonumber(L, -1);
-	lua_getfield(L, 1, "control_channel_bytes");
+	lua_getfield(L, 1, "control_channel_size");
 	control_channel_size = lua_tonumber(L, -1);
-	lua_getfield(L, 1, "main_channel_bytes");
+	lua_getfield(L, 1, "main_queue_size");
 	main_incoming_channel_size = lua_tonumber(L, -1);
 	lua_settop(L, 0);
     }
