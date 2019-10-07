@@ -1,4 +1,6 @@
-tid = name | task | task,nonce
+tid = name | task | task,nonce | none
+
+An omitted (or nil) tid refers to calling task.
 
 * Starting/Stopping
 ** initialize(params)

@@ -852,6 +852,8 @@ int lookup_task(lua_State *L, const char *name)
 
 int validate_task(lua_State *L, int ix)
 {
+    if (lua_isnoneornil(L, ix))
+	return my_index;
     if (lua_isnumber(L, ix)) {
 	int task_ix = luaL_checkinteger(L, ix);
 	if (task_ix < 0 || task_ix >= num_tasks)
