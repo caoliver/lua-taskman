@@ -378,7 +378,6 @@ bugout:
 	    fprintf(stderr, "Task %d,%d failed: %s\n",
 		    my_index, task->nonce, lua_tostring(L, -1));
 
-    // Concatenate sender name since it might get garbage collected.
     for (int i=0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 &&
 	    (i==task->parent_index && tasks[i].nonce == task->parent_nonce &&
