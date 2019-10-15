@@ -898,7 +898,7 @@ static int getmsg(lua_State *L)
 	__atomic_sub_fetch(current_in_use, 1, __ATOMIC_SEQ_CST);
     }
     lua_pushinteger(L, sender);
-    lua_pushinteger(L, sender_task->nonce);
+    lua_pushinteger(L, sender_nonce == sender_task->nonce ? sender_nonce : 0);
     return retcnt;
 }
 
