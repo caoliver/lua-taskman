@@ -875,9 +875,9 @@ static int getmsg(lua_State *L)
 	return 0;
     msg = (void *)(cb_head(&task->incoming_queue) + task->incoming_store);
     uint32_t msgmax = cb_occupied(&task->incoming_queue);
-    if (msgmax < sizeof(struct message)) {
+    // Sanity.  Should never fail.
+    if (msgmax < sizeof(struct message))
 	errx(1, bad_msg, "client");
-    }
     int sender = msg->sender;
     struct task *sender_task = &tasks[sender];
     size_t size = msg->size;
