@@ -62,9 +62,12 @@ An omitted (or nil) tid refers to calling task.
   sleep(numsecs or timestamp) -> numsecs (wake latency)
 * Messages
 ** get_message() -> nil | message, type, { name, } task, nonce
-** wait_message(optional timeout)
+   Nonce will be zero if the task slot is empty or reused since sending.
+** wait_message(optional timeout) -> Same as with get_message.
    With no argument, wait indefinitely.
+   Return of nil indicates a time out.
    Timeout may be a timestamp or number(floating) of seconds.
+   Nonce value behaves as with get_message.
 ** send_message(message, tid)
 ** send_message_with_type(message, type, tid)
 ** broadcast_message(message, type, channel)
