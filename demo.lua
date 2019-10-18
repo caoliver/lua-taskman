@@ -32,7 +32,6 @@ t=require 'taskman'
 t.set_subscriptions{child_task_exits=true}
 
 -- Pass the value of i as the first argument to our function.
-local four
 for i=1,6 do
    local task_id = t.create_task{program=kill_some, show_errors=true, i}
    -- Wait for the task's startup message.
