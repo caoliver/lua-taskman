@@ -1,9 +1,17 @@
+/*********************************************************************/
+/* This is a substitute for luaL buffers.  It improves upon them by  */
+/* using a table rather than the stack.  Thus, one can user strbuffs */
+/* with recursive structure walkers where the luaL_buffer functions  */
+/* would corrupt the stack.					     */
+/*********************************************************************/
+
 #include <string.h>
 #include <lua.h>
 #include <lualib.h>
 #include <lauxlib.h>
 #include "strbuff.h"
 
+// Initialize the buffer and record the index of the work table.
 void strbuff_buffinit(lua_State *L, int lua_index, struct strbuff *buf)
 {
     buf->L = L;
@@ -13,6 +21,7 @@ void strbuff_buffinit(lua_State *L, int lua_index, struct strbuff *buf)
     buf->lua_index = lua_index;
 }
 
+// As with luaL_addlstring.
 void strbuff_addlstring(struct strbuff *buf, const char *str, size_t len)
 {
     while (len > 0) {
@@ -32,6 +41,7 @@ void strbuff_addlstring(struct strbuff *buf, const char *str, size_t len)
     }
 }
 
+// As with luaL_addchar.
 void strbuff_addchar(struct strbuff *buf, char ch)
 {
     if (buf->end - buf->ptr == 0) {
@@ -42,7 +52,8 @@ void strbuff_addchar(struct strbuff *buf, char ch)
     *buf->ptr++ = ch;
 }
 
-
+// Reduce saved results in groups of CONCAT_SIZE.
+// Repeat until only one string remains, and return that.
 #define CONCAT_SIZE 8
 void strbuff_pushresult(struct strbuff *buf)
 {
