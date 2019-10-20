@@ -45,8 +45,12 @@ Freezer provides Lua C API style calls as:
 
     freezer_freeze(lua_State *L);
     freezer_thaw(lua_State *L);
+    freezer_thaw_buffer(lua_State *L);
 
 There is no C API for clone.
+
+Function freezer_thaw() takes a Lua string, and freezer_thaw_buffer expects
+a lightuserdata and its length.
 
 N.B. freeze_freezer expects to get the string.dump function via an upvalue.
 If you will serialize functions, you will need something like the following:

@@ -84,10 +84,10 @@ unsigned char magic_header[] = MAGIC_COOKIE;
 
 static int big_endian=0;
 
-#define USER_SERIALIZER_IDX 3
 #define SEEN_OBJECT_IDX 2
-#define SEEN_UPVALUE_IDX 4
-#define STRING_ACCUMULATOR_IDX 5
+#define USER_SERIALIZER_IDX (SEEN_OBJECT_IDX+1)
+#define SEEN_UPVALUE_IDX (SEEN_OBJECT_IDX+2)
+#define STRING_ACCUMULATOR_IDX (SEEN_OBJECT_IDX+3)
 
 
 // Lower order tag for multibyte numbers
@@ -218,6 +218,11 @@ static unsigned int thaw_num(const uint8_t *src, double *dst,
 }
 
 
+// Check the table of seen objects.
+// We use this just prior to a complex object serializer to save effort
+// and space.  If we've seen the object before, emit the reference and
+// return true.  Otherwise, save the object and a new reference, and
+// return false.
 static int use_or_make_ref(lua_State *L, int index,
 			   unsigned int *seen_object_count,
 			   struct strbuff *catbuf)
@@ -277,12 +282,14 @@ static void freeze_recursive(lua_State *L,
 	return;
     case LUA_TTABLE:
 	if (!use_or_make_ref(L, index, seen_object_count, catbuf)) {
+	    // We can't handle metatables here, so punt.
 	    if (lua_getmetatable(L, index)) {
 		lua_pop(L, 1);
 		break;
 	    } else {
 		unsigned int array_size = lua_objlen(L, index);
 		len = freeze_uint(array_size, TYPE_TABLE, numbuf);
+		// Emit the indexed portion of the table.
 		strbuff_addlstring(catbuf, (void *)numbuf, len);
 		for (int i = 1; i <= array_size; i++) {
 		    lua_rawgeti(L, index, i);
@@ -292,12 +299,15 @@ static void freeze_recursive(lua_State *L,
 
 		    lua_pop(L, 1);
 		}
-		
+
 		if (array_size > 0)
+		    // Big assumption: First non-indexed element
+		    // immediatly follows the last indexed element.
 		    lua_pushinteger(L, array_size);
 		else
 		    lua_pushnil(L);
 
+		// Emit hash portion of the table.
 		while (lua_next(L, index)) {
 		    freeze_recursive(L, -2, seen_object_count,
 				     seen_upvalue_count, catbuf,
@@ -313,9 +323,11 @@ static void freeze_recursive(lua_State *L,
 	return;
     case LUA_TFUNCTION:
 	if (!use_or_make_ref(L, index, seen_object_count, catbuf)) {
+	    // We don't do C functions here.
 	    if (lua_iscfunction(L, index))
 		break;
 	    strbuff_addchar(catbuf, LUA_CLOSURE);
+	    // Call out to lua for dumping.
 	    lua_pushvalue(L, index);
 	    lua_pushboolean(L, strip_debug);
 	    lua_pushvalue(L, lua_upvalueindex(1));
@@ -333,6 +345,8 @@ static void freeze_recursive(lua_State *L,
 	    while (lua_getupvalue(L, index, upvalue_index)) {
 		void *ident = lua_upvalueid(L, index, upvalue_index);
 		lua_pushlightuserdata(L, ident);
+		// Check for shared upvalues.
+		// If previously encountered, emit the reference.
 		lua_rawget(L, SEEN_UPVALUE_IDX);
 		if (!lua_isnil(L, -1)) {
 		    len =
@@ -340,6 +354,8 @@ static void freeze_recursive(lua_State *L,
 		    strbuff_addlstring(catbuf, (void *)numbuf, len);
 		    lua_pop(L, 2);
 		} else {
+		    // If this is a new upvalue, then create a reference
+		    // and then emit the value.
 		    lua_pop(L, 1);
 		    lua_pushlightuserdata(L, ident);
 		    lua_pushinteger(L, ++*seen_upvalue_count);
@@ -357,10 +373,23 @@ static void freeze_recursive(lua_State *L,
 	}
 	return;
     default:
+	// So we've got a corroutine, userdata, or in the case of luaJIT
+	// a cdata.
 	if (use_or_make_ref(L, index, seen_object_count, catbuf))
 	    return;
     }
 
+    // We handle the weirdities here.
+
+    // Call user serializer here.
+    //
+    // This must return:
+    //
+    //   1) nil or false: value is unhandled.  Throw error.
+    //   2) pure Lua 0 artity "constructor" function: is evaluated upon
+    //   thawing.  Return value becomes the value for this item.
+    //   3) Any other non-function true value.  The next value (nil if
+    //   omitted) is substituted for the value on thawing.
     if (lua_isnil(L, USER_SERIALIZER_IDX))
 	goto bugout;
     int curtop = lua_gettop(L);
@@ -391,6 +420,7 @@ static void freeze_recursive(lua_State *L,
     lua_pop(L, 1);
     return;
 
+    // Serialization failed for bad data.  Complain.
 bugout: {
 	const char *typename;
 
@@ -410,7 +440,9 @@ int freezer_freeze(lua_State *L)
     struct strbuff catbuf;
     unsigned int seen_object_count = 0;
 
-    // Handle trivial cases
+    // Handle trivial cases.
+    // Saves set up time for recursive freezer if we don't need it.
+    // This adds a negligible cost to the complex case.
     switch(lua_type(L, 1)) {
     case LUA_TNONE:
     case LUA_TNIL:
@@ -442,6 +474,7 @@ int freezer_freeze(lua_State *L)
 	break;
     }
     case LUA_TTABLE: {
+	// Empty tables are a special case.
 	lua_pushnil(L);
 	if (!lua_next(L, 1)) {
 	    lua_newtable(L);
@@ -454,6 +487,7 @@ int freezer_freeze(lua_State *L)
 	lua_pop(L, 2);
     }
     default:
+	// All others use recursive freezer.
 	goto complex_type;
     }
 
@@ -471,11 +505,13 @@ complex_type:
 #endif
 
     if (lua_gettop(L) == 1)
-	lua_newtable(L); // No preload
+	lua_newtable(L); // No reference preload
     else if (!lua_istable(L, 2)) {
 	lua_newtable(L); // ditto
 	lua_replace(L, 2);
     } else {
+	// Add a set of substitute value references for globals.
+	// This is an alternate for the user serializer in some simple cases.
 	seen_object_count = lua_objlen(L, 2);
 	lua_newtable(L); // Seen object table
 	int top = lua_gettop(L);
@@ -514,6 +550,8 @@ complex_type:
     lua_newtable(L); // String accumulator
     unsigned int seen_upvalue_count = 0;
 
+    // Note that strings are merged in the serialization.
+    // That way we can skip the table lookup if it's not needed.
     if (merge_dupl_strs)
 	strbuff_addchar(&catbuf, MERGE_DUPL_STRS);
 
@@ -552,6 +590,7 @@ static uint32_t thaw_string_header(lua_State *L, uint8_t **src,
     return string_len;
 }
 
+// Thawing has a somewhat simpler fixed stack portion.
 #undef SEEN_OBJECT_IDX
 #undef SEEN_UPVALUE_IDX
 #define SEEN_OBJECT_IDX 3
@@ -580,9 +619,13 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
     case LUA_CLOSURE:
 	++*src;
 	--*available;
+	// Note the position of other references to this code.
+	// WE save it here as the recursive thaw might alter the
+	// seen_object_count.
 	int code_position = ++*seen_object_count;
 	size_t codelen;
 	const char *code;
+	// Fetch and load the dump string.
 	if (merge_dupl_strs) {
 	    thaw_recursive(L, src, available, seen_object_count,
 			   seen_upvalue_count, merge_dupl_strs);
@@ -602,7 +645,11 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 	if (merge_dupl_strs)
 	    lua_remove(L, -2);
 	lua_pushvalue(L, -1);
+	// Save a reference the the restored code.
 	lua_rawseti(L, SEEN_OBJECT_IDX, code_position);
+	// Process upvalue table.
+	// Each entry is either an upvalue index and a value, or
+	// it is a upvalue reference.
 	int upvalueix=1;
 	while (*available > 0 && **src != TABLE_END) {
 	    uint8_t type;
@@ -613,19 +660,26 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 	    *src += used;
 	    switch(type) {
 	    case TYPE_UINT: {
+		// We have an upvalue index.
+		// Save a function reference and the index.
+		// Userdatas are cheaper than tables for this.
 		uint32_t *uvent = lua_newuserdata(L, 2*sizeof(uint32_t));
 		uvent[0] = code_position;
 		uvent[1] = result;
 		lua_rawseti(L, SEEN_UPVALUE_IDX, ++*seen_upvalue_count);
+		// Thaw the actual value.
 		thaw_recursive(L, src, available, seen_object_count,
 			       seen_upvalue_count, merge_dupl_strs);
 		lua_setupvalue(L, -2, result);
 		break;
 	    }
 	    case TYPE_UVREF: {
+		// We have an upvalue reference.
 		lua_rawgeti(L, SEEN_UPVALUE_IDX, result);
 		if (lua_isnil(L, 1))
 		    luaL_error(L, invalid_data);
+		// Retreive the referenced function, upvalue index pair,
+		// and merge this this upvalue with the seen upvalue.
 		uint32_t *uvent = lua_touserdata(L, -1);
 		lua_rawgeti(L, SEEN_OBJECT_IDX, uvent[0]);
 		lua_upvaluejoin(L, -3, upvalueix, -1, uvent[1]);
@@ -645,6 +699,7 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
     case CONSTRUCTOR:
 	++*src;
 	--*available;
+	// The value returned by the constructor is the value of the item.
 	thaw_recursive(L, src, available, seen_object_count,
 		       seen_upvalue_count, merge_dupl_strs);
 	lua_call(L, 0, 1);
@@ -680,6 +735,7 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
     case TYPE_TABLE: {
 	uint32_t result;
 	uint8_t type;
+	// Fetch size of indexed table portion.
 	int used = thaw_uint(*src, &result, &type, *available);
 	if (!used) luaL_error(L, end_of_data);
 	*src += used;
@@ -687,11 +743,13 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 	lua_createtable(L, result, 0);
 	lua_pushvalue(L, -1);
 	lua_rawseti(L, SEEN_OBJECT_IDX, ++*seen_object_count);
+	// Restore indexed portion.
 	for (int i = 1; i <= result; i++) {
 	    thaw_recursive(L, src, available, seen_object_count,
 			   seen_upvalue_count, merge_dupl_strs);
 	    lua_rawseti(L, -2, i);
 	}
+	// Restore hash portion.
 	while (*available > 0 && **src != TABLE_END) {
 	    thaw_recursive(L, src, available, seen_object_count,
 			   seen_upvalue_count, merge_dupl_strs);
@@ -807,6 +865,7 @@ complex_type:
     }
 
     // Make seen object table.
+    // Install substitute value references if they are present.
     lua_newtable(L);
     if (len > 0 && *buf == ALLOCATE_REFS) {
 	buf++;
@@ -838,6 +897,8 @@ complex_type:
     return 1;
 }
 
+// Entry for passing pointers with lengths.
+// Use of this is winds up a bit klugy.
 int freezer_thaw_buffer(lua_State *L)
 {
     size_t len;
@@ -855,6 +916,7 @@ int freezer_thaw_buffer(lua_State *L)
     return freezer_thaw_something(L, buf, len);
 }
 
+// Entry for handling Lua strings.
 int freezer_thaw(lua_State *L)
 {
     luaL_checktype(L, 1, LUA_TSTRING);
