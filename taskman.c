@@ -52,6 +52,8 @@
 #define TASK_CANCEL (SYSMSG+4)
 
 #define MAX_PRIVATE_FLAG 30
+#define IMMUNITY (1<<31)
+
 #define MAX_MSG_TYPE 4095
 #define CHANNEL_COUNT 24
 
@@ -70,13 +72,7 @@ char *announcements[] = {
 #define RECEIVE_CREATE_FAILURES (16<<SUBSCRIBE_SHIFT)
     "create_failures",
     NULL};
-// Unused bits: 32 and 64
-
-
-#define SUBSCRIBE_MASK (127<<SUBSCRIBE_SHIFT)
-
-#define IMMUNITY (1<<31)
-
+// Unused bits: 32, 64, and 128
 
 // Align message lengths on double words.
 #define ALIGN(N) ((N)+7 & ~7)
@@ -1619,7 +1615,7 @@ LUALIB_API int luaopen_taskman(lua_State *L)
     STORECCLOSURE(sleep, 1, -3);
     STORECCLOSURE(wait_message, 1, -2);
 
-    // Users of the validate_task have the task name -> index cache
+    // Users of validate_task have the task name -> index cache
     // as an upvalue.
     lua_newtable(L);
     lua_pushvalue(L, -1);
