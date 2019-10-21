@@ -124,7 +124,7 @@ static size_t control_channel_offset;
 static struct circbuf control_channel_buf;
 static sem_t control_channel_sem;
 static pthread_mutex_t control_channel_mutex;
-static bool display_create_errors;
+static bool show_create_errors;
 
 struct message {
     uint32_t size;
@@ -515,8 +515,9 @@ static int create_task(uint8_t *taskdescr, int size,
 
     return freetask;
 bugout:
-    if (display_create_errors)
-	fprintf(stderr, "%s\n", lua_tostring(newstate, -1));
+    if (show_create_errors)
+	fprintf(stderr, "Task creation failed: %s\n",
+		lua_tostring(newstate, -1));
     if (sender_task->nonce != 0 &&
 	sender_task->subscriptions & RECEIVE_CREATE_FAILURES) {
 	size_t len;
@@ -1533,9 +1534,9 @@ LUAFN(status)
     return 0;
 }
 
-LUAFN(set_display_create_errors)
+LUAFN(show_create_errors)
 {
-    display_create_errors = lua_toboolean(L, 1);
+    show_create_errors = lua_toboolean(L, 1);
     return 0;
 }
 
@@ -1560,7 +1561,7 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(get_global_flag_word),
 	FN_ENTRY(set_affinity),
 	FN_ENTRY(set_cancel),
-	FN_ENTRY(set_display_create_errors),
+	FN_ENTRY(show_create_errors),
 	FN_ENTRY(set_immunity),
 	FN_ENTRY(set_priority), // Requires special privs.
 	FN_ENTRY(set_reception),
