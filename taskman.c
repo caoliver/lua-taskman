@@ -92,9 +92,9 @@ struct task_name {
 };
 
 struct task {
-    uint16_t nonce, last_active_nonce;
+    uint32_t nonce, last_active_nonce;
     uint16_t parent_index;
-    uint16_t parent_nonce;
+    uint32_t parent_nonce;
     uint32_t private_flags;
     uint32_t subscriptions;
     uint32_t queue_in_use;
@@ -106,7 +106,7 @@ struct task {
     sem_t incoming_sem;
     pthread_mutex_t incoming_mutex;
     int query_index;
-    int query_extra;
+    uint32_t query_extra;
     struct task_name *task_name;
     lua_State *my_state;
 };
@@ -131,9 +131,9 @@ static bool show_create_errors;
 
 struct message {
     uint32_t size;
-    uint16_t sender;
     struct task_name *sender_name;
-    uint16_t nonce;
+    uint32_t nonce;
+    uint16_t sender;
     uint16_t type;
     uint8_t payload[0];
 };
@@ -420,7 +420,7 @@ bugout:
 }
 
 static int create_task(uint8_t *taskdescr, int size,
-		       uint16_t sender, uint16_t sender_nonce)
+		       uint16_t sender, uint32_t sender_nonce)
 {
     lua_State *newstate;
     struct task *task = NULL;
@@ -827,7 +827,7 @@ double time_diff(struct timespec *time1, struct timespec *time2)
 
 struct task_cache_entry {
     uint16_t task_ix;
-    uint16_t nonce;
+    uint32_t nonce;
 };
 
 static int wait_for_reply(lua_State *L)
@@ -913,14 +913,11 @@ static int getmsg(lua_State *L)
     cb_release(&task->incoming_queue, ALIGN(sizeof(struct message)+size));
     int retcnt = 4;
     if (sender_name) {
-	if (sender_task->nonce == 0 ||
-	    sender_task->nonce == sender_nonce) {
-	    lua_pushstring(L, sender_name->name);
-	    retcnt++;
-	}
+	lua_pushstring(L, sender_name->name);
 	if (__atomic_sub_fetch(&sender_name->use_count, 1,
 			       __ATOMIC_SEQ_CST) == 0)
 	    free(sender_name);
+	retcnt++;
     }
     lua_pushinteger(L, sender);
     lua_pushinteger(L, sender_nonce == sender_task->nonce ? sender_nonce : 0);
