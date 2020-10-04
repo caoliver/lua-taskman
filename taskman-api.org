@@ -97,7 +97,7 @@ An omitted (or nil) tid refers to calling task.
 ** set_affinity{cpu list}
 * Status display (async)
   status(bool) -- Show task statuson stderr; true to list unnamed.
-  show_create_errors(true) -- Show create failues on stderr.
+  show_create_errors(true) -- Show create failures on stderr.
 * Guaranteeing taskman shutdown at exit
   To be sure all tasks exit cleanly if the main task encounters a fault
   or exit in a non-interactive script, use the newproxy hack:
