@@ -28,7 +28,7 @@
 #define MIN_CONTROL_BUFFER_SIZE (1<<18)
 #define MIN_CLIENT_BUFFER_SIZE (1<<18)
 
-// Wake 50 times per second.
+// Wake 20 times per second.
 #define HOUSEKEEPER_WAKE_USEC 50000
 #define SECONDS_HOUSEKEEPER (1000000/HOUSEKEEPER_WAKE_USEC)
 
