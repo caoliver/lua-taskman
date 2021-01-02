@@ -366,11 +366,11 @@ static void *new_thread(void *luastate)
     int pcall_succeeds = 0;
     pthread_cleanup_push(cancellation_handler, NULL);
     pthread_setcancelstate(previous_cancel, NULL);
+    // Call user program
     pcall_succeeds = lua_pcall(L, arg_count, LUA_MULTRET, 1);
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
     pthread_cleanup_pop(0);
 
-    // Call user program
     if (!pcall_succeeds) {
 	// Pack up return values
 	int retvals = lua_gettop(L) - 1;
@@ -426,8 +426,8 @@ static int create_task(uint8_t *taskdescr, int size,
     struct task *task = NULL;
     struct task *sender_task = &tasks[sender];
     static unsigned int last_task_allocated;
-    // Create tast is invoked from housekeeper only, so L refers to
-    // housekeeper's dictionary store rather than client's lua_States.
+    // Create_task is invoked from housekeeper only, so L refers to
+    // housekeeper's dictionary store rather than client's lua_State.
 
     int freetask = -1;
     // Look for a free slot O(n).
@@ -436,7 +436,7 @@ static int create_task(uint8_t *taskdescr, int size,
 	if (++next_task_allocated == num_tasks)
 	    next_task_allocated = 1;
 	// Previously used task is available if child has cleared
-	// the nonce, and housekeeper has freed the queue storage.
+	// the nonce and housekeeper has freed the queue storage.
 	if (tasks[next_task_allocated].nonce == 0 &&
 	    tasks[next_task_allocated].incoming_store == 0) {
 	    freetask = next_task_allocated;

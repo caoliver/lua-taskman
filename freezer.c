@@ -302,7 +302,7 @@ static void freeze_recursive(lua_State *L,
 
 		if (array_size > 0)
 		    // Big assumption: First non-indexed element
-		    // immediatly follows the last indexed element.
+		    // immediately follows the last indexed element.
 		    lua_pushinteger(L, array_size);
 		else
 		    lua_pushnil(L);
@@ -620,7 +620,7 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 	++*src;
 	--*available;
 	// Note the position of other references to this code.
-	// WE save it here as the recursive thaw might alter the
+	// We save it here as the recursive thaw might alter the
 	// seen_object_count.
 	int code_position = ++*seen_object_count;
 	size_t codelen;
