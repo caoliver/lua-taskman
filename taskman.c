@@ -52,7 +52,7 @@
 #define TASK_CANCEL (SYSMSG+4)
 
 #define MAX_PRIVATE_FLAG 30
-#define IMMUNITY (1<<31)
+#define IMMUNITY (1U<<31)
 
 #define MAX_MSG_TYPE 4095
 #define CHANNEL_COUNT 24
@@ -214,7 +214,8 @@ int send_ctl_msg(uint32_t command, const char *payload, uint32_t size)
 	msg->nonce = tasks[my_index].nonce;
 	msg->type = command;
 	msg->size = size;
-	memcpy(msg->payload, payload, size);
+	if (size > 0)
+	    memcpy(msg->payload, payload, size);
 	cb_produce(&control_channel_buf, msgsize);
 	success = true;
     }
@@ -242,7 +243,8 @@ int send_client_msg(struct task *task,
 	msg->nonce = tasks[my_index].nonce;
 	msg->type = type;
 	msg->size = size;
-	memcpy(msg->payload, payload, size);
+	if (size > 0)
+	    memcpy(msg->payload, payload, size);
 	cb_produce(&task->incoming_queue, msgsize);
 	success = true;
     }
@@ -906,7 +908,7 @@ static int getmsg(lua_State *L)
     int sender = msg->sender;
     struct task *sender_task = &tasks[sender];
     size_t size = msg->size;
-    lua_pushlstring(L, (char *)msg->payload, size);
+    lua_pushlstring(L, size ? (char *)msg->payload : "", size);
     lua_pushinteger(L, msg->type);
     int sender_nonce = msg->nonce;
     struct task_name *sender_name = msg->sender_name;
