@@ -22,7 +22,7 @@ function kill_some(i)
       f.C.pause()
    elseif i~=5 and i~=1 then
       -- Jobs 1 and 5 didn't really want to stick around; we'll just sleep.
-      f.C.pause();
+      f.C.pause()
    end
 end
 
@@ -44,6 +44,7 @@ for i=1,6 do
 end
 
 -- Show who's running.
+-- tasks 2 and 6 may have died by now.
 t.status()
 
 -- Catch the first four exits.
