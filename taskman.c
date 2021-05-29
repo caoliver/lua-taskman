@@ -745,7 +745,7 @@ fini:
 /******************************/
 
 #define ASSURE_INITIALIZED if (!initialized) initialize(L, 0, 0, 0)
-#define TASK_FAIL_IF_UNINITIALISED		\
+#define TASK_FAIL_IF_UNINITIALIZED		\
     do if (!initialized) {			\
 	    lua_pushnil(L);			\
 	    lua_pushstring(L, "Uninitialized"); \
@@ -1023,7 +1023,7 @@ LUAFN(get_my_name)
 
 LUAFN(lookup_task)
 {
-    TASK_FAIL_IF_UNINITIALISED;
+    TASK_FAIL_IF_UNINITIALIZED;
     int task_ix = validate_task(L, 1);
     if (task_ix < 0)
 	return nosuchtask(L);
@@ -1034,7 +1034,7 @@ LUAFN(lookup_task)
 
 LUAFN(interrupt_task)
 {
-    TASK_FAIL_IF_UNINITIALISED;
+    TASK_FAIL_IF_UNINITIALIZED;
     int signo = lua_toboolean(L, 1) ? 12 : 10;
     int task_ix = validate_task(L, 2);
     if (task_ix != my_index && task_ix > 0 &&
@@ -1049,7 +1049,7 @@ LUAFN(interrupt_task)
 
 LUAFN(interrupt_all)
 {
-    TASK_FAIL_IF_UNINITIALISED;
+    TASK_FAIL_IF_UNINITIALIZED;
     int signo = lua_toboolean(L, 1) ? 12 : 10;
     for (int i = 1; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 && i != my_index &&
@@ -1060,7 +1060,7 @@ LUAFN(interrupt_all)
 
 LUAFN(cancel_task)
 {
-    TASK_FAIL_IF_UNINITIALISED;
+    TASK_FAIL_IF_UNINITIALIZED;
     int task_ix = validate_task(L, 1);
     if (task_ix != my_index && task_ix > 0 &&
 	tasks[task_ix].nonce != 0 &&
@@ -1074,7 +1074,7 @@ LUAFN(cancel_task)
 
 LUAFN(cancel_all)
 {
-    TASK_FAIL_IF_UNINITIALISED;
+    TASK_FAIL_IF_UNINITIALIZED;
     for (int i = 1; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 && i != my_index &&
 	    (~tasks[i].private_flags & IMMUNITY || my_index == 0))
