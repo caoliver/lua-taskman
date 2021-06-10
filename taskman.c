@@ -1293,16 +1293,39 @@ LUAFN(time_negate)
     return 1;
 }
 
+static void rectify_timestamp(struct timespec *time)
+{
+    long sec = time->tv_nsec / 1000000000;
+    time->tv_nsec -= sec * 1000000000;
+    time->tv_sec += sec;
+    if (time->tv_sec > 0) {
+	if (time->tv_nsec < 0) {
+	    time->tv_sec--;
+	    time->tv_nsec += 1000000000;
+	}
+    } else if (time->tv_sec < 0 && time->tv_nsec > 0) {
+	time->tv_sec++;
+	time->tv_nsec -= 1000000000;
+    }
+}
+
 LUAFN(time_sum)
 {
     struct timespec *time1 = lua_touserdata(L, 1);
     struct timespec *time2;
     if (lua_isnumber(L, 2)) {
-       time2 = lua_newuserdata(L, sizeof(*time2));
-       add_time_delta(time2, time1, lua_tonumber(L, 2));
-       lua_getmetatable(L, 1);
-       lua_setmetatable(L, -2);
-       return 1;
+	time2 = lua_newuserdata(L, sizeof(*time2));
+	add_time_delta(time2, time1, lua_tonumber(L, 2));
+	lua_getmetatable(L, 1);
+	lua_setmetatable(L, -2);
+	return 1;
+    }
+    if (lua_isnumber(L, 1)) {
+	time2 = lua_newuserdata(L, sizeof(*time2));
+	add_time_delta(time2, lua_touserdata(L, 2), lua_tonumber(L, 1));
+	lua_getmetatable(L, 2);
+	lua_setmetatable(L, -2);
+	return 1;
     }
     lua_getmetatable(L, 1);
     if (!lua_getmetatable(L, 2) || !lua_rawequal(L, -1, -2))
@@ -1311,13 +1334,7 @@ LUAFN(time_sum)
     struct timespec *timesum = lua_newuserdata(L, sizeof(*timesum));
     timesum->tv_sec = time2->tv_sec + time1->tv_sec;
     timesum->tv_nsec = time2->tv_nsec + time1->tv_nsec;
-    if (timesum->tv_nsec > 1000000000) {
-	timesum->tv_sec++;
-	timesum->tv_nsec -= 1000000000;
-    } else if (timesum->tv_nsec < -1000000000) {
-	timesum->tv_sec--;
-	timesum->tv_nsec += 1000000000;
-    }
+    rectify_timestamp(timesum);
     lua_getmetatable(L, 1);
     lua_setmetatable(L, -2);
     return 1;
@@ -1332,11 +1349,8 @@ LUAFN(create_timestamp)
     if (none)
 	time->tv_nsec = 1E9L*(arg1 - time->tv_sec);
     else {
-	time->tv_nsec = luaL_checknumber(L, 2);
-	if (time->tv_sec < 0 || time->tv_nsec < 0) {
-	    time->tv_nsec = time->tv_nsec < 0 ? time->tv_nsec : -time->tv_nsec;
-	    time->tv_sec = time->tv_sec < 0 ? time->tv_sec : -time->tv_sec;
-	}
+	time->tv_nsec = luaL_checkinteger(L, 2);
+	rectify_timestamp(time);
     }
     lua_pushvalue(L, lua_upvalueindex(1));
     lua_setmetatable(L, -2);
@@ -1355,14 +1369,15 @@ LUAFN(timestamp_parts)
 
 LUAFN(time_scale)
 {
-    long scale_factor = luaL_checkinteger(L, 2);
-    struct timespec *time1 = lua_touserdata(L, 1);
+    int stampix = lua_isnumber(L, 1) ? 2 : 1;
+    long scale_factor = luaL_checkinteger(L, 3-stampix);
+    struct timespec *time1 = lua_touserdata(L, stampix);
     struct timespec *time2 = lua_newuserdata(L, sizeof(*time2));
     time2->tv_sec = scale_factor * time1->tv_sec;
     time2->tv_nsec = (scale_factor * time1->tv_nsec);
     time2->tv_nsec %= 1000000000;
     time2->tv_sec += (scale_factor * time1->tv_nsec)/1000000000;
-    lua_getmetatable(L, 1);
+    lua_getmetatable(L, stampix);
     lua_setmetatable(L, -2);
     return 1;
 }
