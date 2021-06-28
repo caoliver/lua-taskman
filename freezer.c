@@ -70,7 +70,7 @@ static uint64_t bswap_64(uint64_t n)
 }
 #endif
 
-#define STRLIT(VAL) (char []){VAL}
+#define STRLIT(...) (char []){__VA_ARGS__}
 
 // Include for debugging.
 // #include "show_stack.h"
@@ -477,11 +477,7 @@ int freezer_freeze(lua_State *L)
 	// Empty tables are a special case.
 	lua_pushnil(L);
 	if (!lua_next(L, 1)) {
-	    lua_newtable(L);
-	    strbuff_buffinit (L, 2, &catbuf);
-	    strbuff_addchar(&catbuf, TYPE_TABLE);
-	    strbuff_addchar(&catbuf, TABLE_END);
-	    strbuff_pushresult(&catbuf);
+	    lua_pushlstring(L, STRLIT(TYPE_TABLE, TABLE_END), 2);
 	    break;
 	}
 	lua_pop(L, 2);
