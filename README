@@ -52,7 +52,7 @@ There is no C API for clone.
 Function freezer_thaw() takes a Lua string, and freezer_thaw_buffer expects
 a lightuserdata and its length.
 
-N.B. freeze_freezer expects to get the string.dump function via an upvalue.
+N.B. freezer_freeze expects to get the string.dump function via an upvalue.
 If you will serialize functions, you will need something like the following:
 
     lua_getglobal(L, "string");
@@ -123,9 +123,10 @@ Also, if the substitution or upvalues of the constructor function refer
 to previously seen special values, the produced serialization will be
 corrupt, and thaw will produce an error if fed it.
 
-Limitations: ------------
+Limitations:
+------------
 
 Serialized code may not be portable.
 
-Credits: test.lua and most of this document come from Richard Hundt's
+Credits: test.lua and much of this document come from Richard Hundt's
 work in lua-marshal.
