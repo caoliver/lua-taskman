@@ -365,15 +365,15 @@ static void *new_thread(void *luastate)
 	     tasks[i].subscriptions & RECEIVE_ANY_NEW_TASKS))
 	    send_client_msg(&tasks[i], TASK_CREATE, "", 0);
 
-    int pcall_succeeds = 0;
+    int pcall_fails = 0;
     pthread_cleanup_push(cancellation_handler, NULL);
     pthread_setcancelstate(previous_cancel, NULL);
     // Call user program
-    pcall_succeeds = lua_pcall(L, arg_count, LUA_MULTRET, 1);
+    pcall_fails = lua_pcall(L, arg_count, LUA_MULTRET, 1);
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
     pthread_cleanup_pop(0);
 
-    if (!pcall_succeeds) {
+    if (!pcall_fails) {
 	// Pack up return values
 	int retvals = lua_gettop(L) - 1;
 	lua_newtable(L);
