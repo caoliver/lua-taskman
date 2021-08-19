@@ -100,7 +100,6 @@ struct task {
     uint32_t queue_in_use;
     struct circbuf incoming_queue;
     uint8_t *incoming_store;
-    size_t incoming_offset;
     pthread_t thread;
     sem_t housekeeper_pending;
     sem_t incoming_sem;
@@ -123,7 +122,6 @@ static char *bad_msg = "%s: Bad message";
 
 static size_t control_channel_size;
 static uint8_t *control_channel_store;
-static size_t control_channel_offset;
 static struct circbuf control_channel_buf;
 static sem_t control_channel_sem;
 static pthread_mutex_t control_channel_mutex;
@@ -252,8 +250,7 @@ int send_client_msg(struct task *task,
 	tasks->incoming_store) {
 	purge_incoming_queue(task);
 	free_twinmap(task->incoming_store,
-		     task->incoming_queue.size,
-		     task->incoming_offset);
+		     task->incoming_queue.size);
 	tasks->incoming_store = 0;
     }
     pthread_mutex_unlock(&task->incoming_mutex);
@@ -509,8 +506,7 @@ static int create_task(uint8_t *taskdescr, int size,
     if (queue_size < MIN_CLIENT_BUFFER_SIZE)
 	queue_size = MIN_CLIENT_BUFFER_SIZE;
     size_t qsize = queue_size;
-    task->incoming_store =
-	allocate_twinmap(&qsize, &task->incoming_offset);
+    task->incoming_store = allocate_twinmap(&qsize);
     cb_init(&task->incoming_queue, qsize);
     sem_init(&task->incoming_sem, 0, 0);
     pthread_mutex_init(&task->incoming_mutex, NULL);
@@ -549,8 +545,7 @@ bugout:
     if (task) {
 	if (task->incoming_store)
 	    free_twinmap(task->incoming_store,
-			 task->incoming_queue.size,
-			 task->incoming_offset);
+			 task->incoming_queue.size);
 	free(task->task_name);
     }
 	
@@ -696,8 +691,7 @@ static void *housekeeper(void *dummy)
 		tasks->incoming_store) {
 		purge_incoming_queue(&tasks[sender]);
 		free_twinmap(tasks[sender].incoming_store,
-			     tasks[sender].incoming_queue.size,
-			     tasks[sender].incoming_offset);
+			     tasks[sender].incoming_queue.size);
 		tasks[sender].incoming_store = 0;
 	    }
 	    if (oldname) {
@@ -777,13 +771,11 @@ static int initialize(lua_State *L,
 
     if (control_channel_size < MIN_CONTROL_BUFFER_SIZE)
 	control_channel_size = MIN_CONTROL_BUFFER_SIZE;
-    control_channel_store =
-	allocate_twinmap(&control_channel_size, &control_channel_offset);
+    control_channel_store = allocate_twinmap(&control_channel_size);
     cb_init(&control_channel_buf, control_channel_size);
     if (main_incoming_channel_size < MIN_CLIENT_BUFFER_SIZE)
 	main_incoming_channel_size = MIN_CLIENT_BUFFER_SIZE;
-    tasks->incoming_store =
-	allocate_twinmap(&main_incoming_channel_size, &tasks->incoming_offset);
+    tasks->incoming_store = allocate_twinmap(&main_incoming_channel_size);
     cb_init(&tasks->incoming_queue, main_incoming_channel_size);
 
     // Main thread is task 0;
@@ -971,8 +963,7 @@ LUAFN(shutdown)
 	free(tasks[0].task_name);
 	free(tasks);
 	free_twinmap(control_channel_store,
-		     control_channel_size,
-		     control_channel_offset);
+		     control_channel_size);
 	initialized = false;
     }
     return 0;
