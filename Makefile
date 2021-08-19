@@ -10,7 +10,7 @@ CFLAGS+=-mtune=generic
 #CFLAGS+=-march=native -mfloat-abi=hard
 LDFLAGS+=-ldl -shared -pthread -lm
 VER=0.0
-SHOBJS=freezer.so taskman.so mmaputil.so strbuff.so
+SHOBJS=freezer.so taskman.so twinmap.so strbuff.so
 
 .PHONY: all clean tests install
 
@@ -25,17 +25,17 @@ freezer.so: freezer.o strbuff.so
 	-Wl,-rpath=$(LIBPATH) -o $@ $^
 	LD_LIBRARY_PATH=$(PWD) lua fz-test.lua
 
-taskman.so: taskman.o mmaputil.so freezer.so
+taskman.so: taskman.o twinmap.so freezer.so
 	gcc -Wl,-soname,lua-taskman.so.$(VER) $(LDFLAGS) \
 	-Wl,-rpath=$(LIBPATH) -o $@ $^
 
-mmaputil.so: mmaputil.o
-	gcc $(LDFLAGS) -Wl,-soname,lua-mmaputil.so.$(VER) -o $@ $^
+twinmap.so: twinmap.o
+	gcc $(LDFLAGS) -Wl,-soname,lua-twinmap.so.$(VER) -o $@ $^
 
-install: freezer.so taskman.so mmaputil.so ffi+.lua
+install: freezer.so taskman.so twinmap.so ffi+.lua
 	install -m 0755 *.so $(LIBPATH)
 	install -m 0644 ffi+.lua $(LUAPATH)
-	install -m 0644 mmaputil.h cbuf.h $(INCPATH)
+	install -m 0644 twinmap.h cbuf.h $(INCPATH)
 	(cd $(LIBPATH) && ldconfig -N -l $(SHOBJS))
 
 clean:
