@@ -747,7 +747,7 @@ fini:
 
 static int initialize(lua_State *L,
 		      unsigned int task_limit,
-		      size_t control_channel_size,
+		      size_t control_channel_size_wanted,
 		      size_t main_incoming_channel_size)
 {
     if (initialized)
@@ -769,6 +769,7 @@ static int initialize(lua_State *L,
     num_tasks = task_limit < MIN_TASKS ? MIN_TASKS : task_limit;
     tasks = calloc(num_tasks, sizeof(struct task));
 
+    control_channel_size = control_channel_size_wanted;
     if (control_channel_size < MIN_CONTROL_BUFFER_SIZE)
 	control_channel_size = MIN_CONTROL_BUFFER_SIZE;
     control_channel_store = allocate_twinmap(&control_channel_size);
@@ -960,6 +961,8 @@ LUAFN(shutdown)
 	sem_wait(&tasks[my_index].housekeeper_pending);
 	pthread_join(housekeeper_thread, NULL);
 	purge_incoming_queue(&tasks[0]);
+	free_twinmap(tasks[0].incoming_store,
+		     tasks[0].incoming_queue.size);
 	free(tasks[0].task_name);
 	free(tasks);
 	free_twinmap(control_channel_store,
