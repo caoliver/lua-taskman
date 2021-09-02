@@ -9,7 +9,7 @@ local function reader()
       t.wait_message()
    end
    print(os.clock()-s)
-   t.change_global_flag(0, 1);
+   t.change_global_flag(0, true);
 end
 
 local function writer()
