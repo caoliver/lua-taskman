@@ -1,5 +1,5 @@
 /*********************************************************************/
-/* Freezer a serializer/deserializer for Lua values inspired by	     */
+/* Freezer: a serializer/deserializer for Lua values inspired by     */
 /* Richard Hundt's lmarshal and the compactness of CBOR.	     */
 /* 								     */
 /* License: MIT							     */
