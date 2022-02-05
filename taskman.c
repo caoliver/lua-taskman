@@ -321,11 +321,12 @@ static void *new_thread(void *luastate)
     int rc = 0;
     if (lua_type(L, -1) == LUA_TSTRING &&
 	lua_objlen(L, -1) > 1) {
-	const char *progtext=lua_tostring(L, -1);
+	size_t len;
+	const char *progtext=lua_tolstring(L, -1, &len);
 	if (progtext[0] == ':')
 	    rc = luaL_loadfile(L, &progtext[1]);
 	else
-	    rc = luaL_loadstring(L, progtext);
+	    rc = luaL_loadbuffer(L, progtext, len, "new_thread()");
 	lua_remove(L, -2);
     }
     // If we don't have a function now, then caller made a booboo.
