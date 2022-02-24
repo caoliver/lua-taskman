@@ -940,11 +940,11 @@ LUAFN(initialize)
     if (lua_istable(L, 1)) {
 	lua_settop(L, 1);
 	lua_getfield(L, 1, "task_limit");
-	task_limit = lua_tonumber(L, -1);
+	task_limit = lua_tointeger(L, -1);
 	lua_getfield(L, 1, "control_channel_size");
-	control_channel_size = lua_tonumber(L, -1);
+	control_channel_size = lua_tointeger(L, -1);
 	lua_getfield(L, 1, "main_queue_size");
-	main_incoming_channel_size = lua_tonumber(L, -1);
+	main_incoming_channel_size = lua_tointeger(L, -1);
 	lua_settop(L, 0);
     }
 
