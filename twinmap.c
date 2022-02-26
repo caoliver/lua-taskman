@@ -4,16 +4,20 @@
 #include <err.h>
 #include <sys/mman.h>
 #include <fcntl.h>
+#include <stdbool.h>
 
 #ifndef MAP_32BIT
 #define MAP_32BIT 0
 #endif
+
+bool twinmap_uses_long_addresses = false;
 
 static unsigned int page_mask;
 
 const char *cdef_string =
     "uint8_t *allocate_twinmap(size_t *);"
     "void free_twinmap(void *base, size_t size);"
+    "bool twinmap_uses_long_addresses;"
    ;
 
 __attribute__((constructor)) static void load_time_init()
@@ -33,7 +37,9 @@ void *allocate_twinmap(size_t *size)
 	err(1, NULL);
     
     void *buf = mmap(NULL, 2 * *size, PROT_NONE,
-	       MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
+		     MAP_PRIVATE | MAP_ANONYMOUS | \
+		     (twinmap_uses_long_addresses ? 0 : MAP_32BIT),
+		     -1, 0);
 
     if (buf == badmap ||
 	mmap(buf, *size, PROT_READ | PROT_WRITE,
