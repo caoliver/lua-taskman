@@ -474,13 +474,14 @@ int freezer_freeze(lua_State *L)
 	break;
     }
     case LUA_TTABLE: {
-	// Empty tables are a special case.
+	// Empty tables are a special case unless they have a metatable.
+	int top = lua_gettop(L);
 	lua_pushnil(L);
-	if (!lua_next(L, 1)) {
+	if (!lua_next(L, 1) && !lua_getmetatable(L, 1)) {
 	    lua_pushlstring(L, STRLIT(TYPE_TABLE, TABLE_END), 2);
 	    break;
 	}
-	lua_pop(L, 2);
+	lua_settop(L, top);
     }
     default:
 	// All others use recursive freezer.
