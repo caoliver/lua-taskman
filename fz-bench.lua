@@ -27,7 +27,10 @@ scale=1
 
 local last_time
 function bench(name, encoder, decoder, show)
-   function help(td) return encoder(td, {}, false, strip) end
+   local help=encoder
+   if strip then
+      function help(td) return encoder(td, {}, false, strip) end
+   end
    collectgarbage()
    s=stopwatch()
    for i=1,times do
@@ -44,7 +47,7 @@ function bench(name, encoder, decoder, show)
    return microsecs
 end
 
-nfz = package.loadlib('newfreezer.so', 'luaopen_freezer')
+nfz = package.loadlib('./newfreezer.so', 'luaopen_freezer')
 if (nfz) then nfz = nfz() end
 fz = require 'freezer'
 rh= require 'marshal'
@@ -66,7 +69,6 @@ end
 
 local function null() end
 local function ident(x) return x end
-local otd
 
 function ebench(head, tdata, skipcb)
    header('\n'..head..' encode')
