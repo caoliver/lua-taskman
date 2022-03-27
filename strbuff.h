@@ -2,12 +2,14 @@
 #include <lualib.h>
 #include <lauxlib.h>
 
+#define STRBUFFSIZ (BUFSIZ > 16384 ? 8192 : BUFSIZ)
+
 struct strbuff {
     lua_State *L;
-    char buf[BUFSIZ > 16384 ? 8192 : BUFSIZ];
-    char *ptr, *end;
-    unsigned int depth;
-    int lua_index;
+    char buf[STRBUFFSIZ];
+    char *base, *ptr;
+    unsigned int len, in_use;
+    int stack_index;
 };
 
 // The difference between these and luaL_Buffers is that one specifies

@@ -463,8 +463,9 @@ int freezer_freeze(lua_State *L)
     case LUA_TSTRING: {
 	size_t len;
 	char numbuf[9];
-	lua_newtable(L);
-	lua_replace(L, 2);
+	lua_pushnil(L);
+	if (lua_gettop(L) > 2)
+	    lua_replace(L, 2);
 	strbuff_buffinit (L, 2, &catbuf);
 	const char *str = lua_tolstring(L, 1, &len);
 	strbuff_addlstring(&catbuf, (void *)numbuf,
@@ -544,7 +545,7 @@ complex_type:
     lua_settop(L, 3);
 
     lua_newtable(L); // Seen upvalue table
-    lua_newtable(L); // String accumulator
+    lua_pushnil(L); // String accumulator slot
     unsigned int seen_upvalue_count = 0;
 
     // Note that strings are merged in the serialization.
