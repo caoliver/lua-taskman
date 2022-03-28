@@ -82,7 +82,9 @@ function ebench(head, tdata, skipcb)
    local elapsedfz = bench('fz', fz.encode, null, true)
    if nfz then
       local elapsednfz = bench('new fz', nfz.encode, null, true)
-      print(("gain    %0.2f%%"):format(100*(elapsedfz-elapsednfz)/elapsedfz))
+      local diffns = 1000*(elapsedfz-elapsednfz)
+      print(("Improvement   %0.1fns (%0.2f%%)"):
+	    format(diffns, diffns/elapsedfz/10))
       assert(fz.encode(td) == nfz.encode(td))
    end
 end
@@ -101,7 +103,9 @@ function dbench(head, tdata, skipcb)
    local elapsedfz = bench('fz', ident, fz.decode, true)
    if nfz then
       local elapsednfz = bench('new fz', ident, nfz.decode, true)
-      print(("gain    %0.2f%%"):format(100*(elapsedfz-elapsednfz)/elapsedfz))
+      local diffns = 1000*(elapsedfz-elapsednfz)
+      print(("Improvement   %0.1fns (%0.2f%%)"):
+	    format(diffns, diffns/elapsedfz/10))
    end
 end
 
