@@ -25,8 +25,10 @@
 #define MIN_TASKS 64
 // This is a uint16_t.  Maybe make this smaller.
 #define MAX_TASKS 65536
-#define MIN_CONTROL_BUFFER_SIZE (1<<18)
-#define MIN_CLIENT_BUFFER_SIZE (1<<18)
+#define MIN_CONTROL_BUFFER_SIZE (1<<16)
+#define MIN_CLIENT_BUFFER_SIZE (1<<16)
+#define DEFAULT_CONTROL_BUFFER_SIZE (1<<18)
+#define DEFAULT_CLIENT_BUFFER_SIZE (1<<18)
 
 // Wake 20 times per second.
 #define HOUSEKEEPER_WAKE_USEC 50000
@@ -569,6 +571,11 @@ static void kill_stragglers()
 	fprintf(stderr, "Stragglers: %d\n", found_some);
 }
 
+struct task_description {
+    uint8_t *description;
+    int length;
+};
+
 static void *housekeeper(void *dummy)
 {
     struct message *msg;
@@ -634,7 +641,9 @@ static void *housekeeper(void *dummy)
 	    if (shutdown)
 		tasks[sender].query_index = -1;
 	    else {
-		int child_ix = create_task(msg->payload, msg->size,
+		struct task_description *task_descr = (void *)msg->payload;
+		int child_ix = create_task(task_descr->description,
+					   task_descr->length,
 					   sender, msg->nonce);
 		tasks[sender].query_index = child_ix;
 		if (child_ix > 0) {
@@ -739,7 +748,11 @@ fini:
 /* Internal utility functions */
 /******************************/
 
-#define ASSURE_INITIALIZED if (!initialized) initialize(L, 0, 0, 0)
+#define ASSURE_INITIALIZED					\
+    if (!initialized) initialize(L,				\
+				 0,				\
+				 DEFAULT_CONTROL_BUFFER_SIZE,	\
+				 DEFAULT_CLIENT_BUFFER_SIZE)
 #define TASK_FAIL_IF_UNINITIALIZED		\
     do if (!initialized) {			\
 	    lua_pushnil(L);			\
@@ -947,12 +960,15 @@ LUAFN(initialize)
 	lua_getfield(L, 1, "task_limit");
 	task_limit = lua_tointeger(L, -1);
 	lua_getfield(L, 1, "control_channel_size");
-	control_channel_size = lua_tointeger(L, -1);
+	control_channel_size =
+	    lua_isnil(L, -1) ? DEFAULT_CONTROL_BUFFER_SIZE
+	    : lua_tointeger(L, -1);
 	lua_getfield(L, 1, "main_queue_size");
-	main_incoming_channel_size = lua_tointeger(L, -1);
+	main_incoming_channel_size =
+	    lua_isnil(L, -1) ? DEFAULT_CLIENT_BUFFER_SIZE
+	    : lua_tointeger(L, -1);
 	lua_settop(L, 0);
     }
-
     lua_pushboolean(L, initialize(L,
 				  task_limit,
 				  control_channel_size,
@@ -989,7 +1005,9 @@ LUAFN(create_task)
     luaL_checktype(L, 1, LUA_TTABLE);
     freezer_freeze(L);
     size_t size = lua_objlen(L, -1);
-    if (send_ctl_msg(CREATE_TASK, lua_tostring(L, -1), size))
+    struct task_description task_descr =
+	{ (uint8_t *)lua_tostring(L, -1), size };
+    if (send_ctl_msg(CREATE_TASK, (char *)&task_descr, sizeof(task_descr)))
 	return 0;
     return wait_for_reply(L);
 }
