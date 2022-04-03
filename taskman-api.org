@@ -1,6 +1,10 @@
-tid = name | task | task,nonce | none
+tid = name | task | task,nonce | -1 | none
+
+tid ':main:' or 0 refers to the root task.
 
 An omitted (or nil) tid refers to calling task.
+
+A tid of -1 refers to the parent task.  Task 0 has no parent.
 
 * Starting/Stopping
 ** initialize(params)

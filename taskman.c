@@ -517,8 +517,12 @@ static int create_task(uint8_t *taskdescr, int size,
 
     //  Create incoming message queue.
     lua_getfield(newstate, -1, "queue_size");
-    int queue_size = lua_tointeger(newstate, -1);
-    if (!lua_isnil(newstate, -1) && !lua_isnumber(newstate, -1)) {
+    int queue_size;
+    if (lua_isnil(newstate, -1))
+	queue_size = DEFAULT_CLIENT_BUFFER_SIZE;
+    else if (lua_isnumber(newstate, -1))
+	queue_size = lua_tointeger(newstate, -1);
+    else {
 	lua_pushstring(newstate, "Bad queue size");
 	goto bugout;
     }
