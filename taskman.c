@@ -875,6 +875,11 @@ int validate_task(lua_State *L, int ix)
 	return my_index;
     if (lua_isnumber(L, ix)) {
 	int task_ix = luaL_checkinteger(L, ix);
+	if (task_ix == -1) {
+	    struct task *task = &tasks[my_index];
+	    if (tasks[task->parent_index].nonce == task->parent_nonce)
+		return task->parent_index;
+	}
 	if (task_ix < 0 || task_ix >= num_tasks)
 	    return -1;
 	if (lua_isnoneornil(L, ix+1)) {
