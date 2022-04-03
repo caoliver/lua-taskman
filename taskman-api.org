@@ -7,7 +7,7 @@ An omitted (or nil) tid refers to calling task.
 A tid of -1 refers to the parent task.  Task 0 has no parent.
 
 * Starting/Stopping
-** initialize(params)
+** initialize{params}
 
   params:
 
@@ -104,7 +104,6 @@ A tid of -1 refers to the parent task.  Task 0 has no parent.
 ** set_affinity{cpu list}
 * Status display (async)
   status(bool) -- Show task statuson stderr; true to list unnamed.
-  show_create_errors(true) -- Show create failures on stderr.
 * Guaranteeing taskman shutdown at exit
   To be sure all tasks exit cleanly if the main task encounters a fault
   or exit in a non-interactive script, use the newproxy hack:

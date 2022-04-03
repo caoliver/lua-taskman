@@ -133,7 +133,6 @@ static uint8_t *control_channel_store;
 static struct circbuf control_channel_buf;
 static sem_t control_channel_sem;
 static pthread_mutex_t control_channel_mutex;
-static bool show_create_errors;
 
 struct message {
     uint32_t size;
@@ -445,6 +444,8 @@ static int create_task(uint8_t *taskdescr, int size,
     struct task *task = NULL;
     struct task *sender_task = &tasks[sender];
     static unsigned int last_task_allocated;
+    bool show_errors;
+
     // Create_task is invoked from housekeeper only, so L refers to
     // housekeeper's dictionary store rather than client's lua_State.
 
@@ -465,6 +466,7 @@ static int create_task(uint8_t *taskdescr, int size,
     newstate = luaL_newstate();
     if (freetask < 0) {
 	lua_pushstring(newstate, "No tasks available.");
+	show_errors = true;  // Bad underallocation.  Always complain.
 	goto bugout;
     }
     luaL_openlibs(newstate);
@@ -479,18 +481,18 @@ static int create_task(uint8_t *taskdescr, int size,
     lua_pushcfunction(newstate, freezer_thaw_buffer);
     lua_pushlightuserdata(newstate, (void *)taskdescr);
     lua_pushinteger(newstate, size);
-    // This shouldn't happen unless freezer is broken.
-    if (lua_pcall(newstate, 2,1,-4)) {
-	lua_pushfstring(newstate, "Freezer decode failed: %s",
-			lua_tostring(newstate, -1));
-	lua_remove(newstate, -2);
-	goto bugout;
-    }
+    // This shouldn't happen unless freezer is broken.  If so, panic!
+    if (lua_pcall(newstate, 2,1,-4))
+	errx(1, "Freezer decode failed: %s", lua_tostring(newstate, -1));
     task = &tasks[freetask];
     // pthread_cancel needs this for cleanup.
     task->my_state = newstate;
     task->private_flags = 0;
     task->subscriptions = 0;
+
+    lua_getfield(newstate, -1, "show_errors");
+    show_errors |= lua_toboolean(newstate, -1);
+    lua_pop(newstate, 1);
 
     // Set task name if given one.
     lua_getfield(newstate, -1, "task_name");
@@ -557,7 +559,7 @@ static int create_task(uint8_t *taskdescr, int size,
 
     return freetask;
 bugout:
-    if (show_create_errors)
+    if (show_errors)
 	fprintf(stderr, "Task creation failed: %s\n",
 		lua_tostring(newstate, -1));
     if (sender_task->nonce != 0 &&
@@ -1614,12 +1616,6 @@ LUAFN(status)
     return 0;
 }
 
-LUAFN(show_create_errors)
-{
-    show_create_errors = lua_toboolean(L, 1);
-    return 0;
-}
-
 LUALIB_API int luaopen_taskman(lua_State *L)
 {
     /********************/
@@ -1641,7 +1637,6 @@ LUALIB_API int luaopen_taskman(lua_State *L)
 	FN_ENTRY(get_global_flag_word),
 	FN_ENTRY(set_affinity),
 	FN_ENTRY(set_cancel),
-	FN_ENTRY(show_create_errors),
 	FN_ENTRY(set_immunity),
 	FN_ENTRY(set_priority), // Requires special privs.
 	FN_ENTRY(set_reception),
