@@ -24,16 +24,18 @@ An omitted (or nil) tid refers to calling task.
   cancel_all() - except caller and main
   set_cancel(enable, deferred) -> old_enable, old_deferred
 ** task_specification
-  | field       | mandatory | value     | use                       |
-  |-------------+-----------+-----------+---------------------------|
-  | program     | yes       | fn or str | program to run:           |
-  |             |           |           | fn captures upvals,       |
-  |             |           |           | ":file" for file,         |
-  |             |           |           | otherwise code string.    |
-  | queue_size  | no        | int       | message queue size        |
-  | task_name   | no        | str       | task id                   |
-  | show_errors | no        | bool      | display on stderr (async) |
-  | show_exits  | no        | bool      | display on stderr (async) |
+  | field        | mandatory | value     | use                       |
+  |--------------+-----------+-----------+---------------------------|
+  | program      | yes       | fn or str | program to run:           |
+  |              |           |           | fn captures upvals,       |
+  |              |           |           | ":file" for file,         |
+  |              |           |           | otherwise code string     |
+  | queue_size   | no        | int       | message queue size        |
+  | task_name    | no        | str       | task id                   |
+  | show_errors  | no        | bool      | display on stderr (async) |
+  | show_exits   | no        | bool      | display on stderr (async) |
+  | send_results | no        | bool      | send frozen child results |
+  |              |           |           | as child exit message     |
 
   Indexed elements are passed as function arguments.
 * Flags
@@ -80,6 +82,7 @@ An omitted (or nil) tid refers to calling task.
    new_named_tasks
    any_new_tasks
    create_failures
+   any_results (subscribes to any_task_exits)
 *** Messages types sent
     | task_create_failed | Housekeeper failed to launch task        |
     | task_created       |                                          |

@@ -62,19 +62,25 @@
 #define CHANNEL_MASK ((1<<CHANNEL_COUNT)-1)
 
 #define SUBSCRIBE_SHIFT 24
-char *announcements[] = {
 #define RECEIVE_CHILD_EXITS (1<<SUBSCRIBE_SHIFT)
-    "child_task_exits",
 #define RECEIVE_ALL_TASK_EXITS (2<<SUBSCRIBE_SHIFT)
-    "any_task_exits",
 #define RECEIVE_NEW_NAMED_TASKS (4<<SUBSCRIBE_SHIFT)
-    "new_named_task",
 #define RECEIVE_ANY_NEW_TASKS (8<<SUBSCRIBE_SHIFT)
-    "any_new_task",
 #define RECEIVE_CREATE_FAILURES (16<<SUBSCRIBE_SHIFT)
-    "create_failures",
-    NULL};
-// Unused bits: 32, 64, and 128
+#define RECEIVE_ANY_RESULTS (32<<SUBSCRIBE_SHIFT)
+struct announcements {
+    const char *name;
+    int flags;
+} announcements[] = {
+    { "child_task_exits", RECEIVE_CHILD_EXITS },
+    { "any_task_exits", RECEIVE_ALL_TASK_EXITS },
+    { "new_named_task", RECEIVE_NEW_NAMED_TASKS },
+    { "any_new_task", RECEIVE_ANY_NEW_TASKS },
+    { "create_failures", RECEIVE_CREATE_FAILURES },
+    { "any_results", RECEIVE_ANY_RESULTS | RECEIVE_ALL_TASK_EXITS },
+    { NULL, 0 }
+};
+// Unused bits: 64, and 128
 
 // Align message lengths on double words.
 #define ALIGN(N) ((N)+7 & ~7)
@@ -293,6 +299,7 @@ static void *new_thread(void *luastate)
 {
     int previous_cancel;
     bool succeeded = false;
+    bool send_results;
     // Race?
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &previous_cancel);
     L = luastate;
@@ -316,6 +323,9 @@ static void *new_thread(void *luastate)
     lua_pop(L, 1);
     lua_getfield(L, -1, "show_exits");
     show_exits = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, -1, "send_results");
+    send_results = lua_toboolean(L, -1);
     lua_pop(L, 1);
 
     // Fetch the program.
@@ -405,14 +415,21 @@ bugout:
 	    fprintf(stderr, "Task %d,%d failed: %s\n",
 		    my_index, task->nonce, lua_tostring(L, -1));
 
+    size_t pack_len = lua_objlen(L, -1);
     for (int i=0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 &&
 	    (i==task->parent_index && tasks[i].nonce == task->parent_nonce &&
-	     tasks[i].subscriptions & RECEIVE_CHILD_EXITS ||
+	     (tasks[i].subscriptions & RECEIVE_CHILD_EXITS || send_results) ||
 	     tasks[i].subscriptions & RECEIVE_ALL_TASK_EXITS))
-	    send_client_msg(&tasks[i],
-			    succeeded ? TASK_EXIT : TASK_FAILURE,
-			    lua_tostring(L, -1), lua_objlen(L, -1));
+	    if (!succeeded ||
+		i == task->parent_index && send_results ||
+		(tasks[i].subscriptions & RECEIVE_ANY_RESULTS) ==
+		RECEIVE_ANY_RESULTS)
+		send_client_msg(&tasks[i],
+				succeeded ? TASK_EXIT : TASK_FAILURE,
+				lua_tostring(L, -1), pack_len);
+	    else
+		send_client_msg(&tasks[i], TASK_EXIT, "", 0);
 
     tasks[my_index].nonce = 0;
     if (send_ctl_msg(THREAD_EXITS, succeeded ? "S" : "F", 1))
@@ -1523,9 +1540,9 @@ LUAFN(set_subscriptions)
     ASSURE_INITIALIZED;
     luaL_checktype(L, 1, LUA_TTABLE);
     int flags = 0;
-    for (int i=0; announcements[i]; i++) {
-	lua_getfield(L, 1, announcements[i]);
-	flags |=  (lua_isnil(L, -1) ? 0 : (1<<SUBSCRIBE_SHIFT+i));
+    for (int i=0; announcements[i].name; i++) {
+	lua_getfield(L, 1, announcements[i].name);
+	flags |=  (lua_isnil(L, -1) ? 0 : announcements[i].flags);
 	lua_pop(L, 1);
     }
     tasks[my_index].subscriptions &= CHANNEL_MASK;
