@@ -85,9 +85,9 @@ struct announcements {
 // Align message lengths on double words.
 #define ALIGN(N) ((N)+7 & ~7)
 
-__thread lua_State *L;
+static __thread lua_State *L;
 
-__thread uint16_t my_index;
+static __thread uint16_t my_index;
 
 static char *housekeeper_name = "HouseKeeper";
 static char *maintask_name = ":main:";
