@@ -32,8 +32,8 @@ local f=require 'freezer'
 
 t.set_subscriptions {child_task_exits=true}
 
-t.create_task{program=reader, task_name='reader'}
-t.create_task{program=writer}
+t.create_task{program=reader, task_name='reader', send_results=true}
+t.create_task{program=writer, send_results=true}
 
 local m1, _, s1 = t.wait_message()
 local m2, _, s2 = t.wait_message()
