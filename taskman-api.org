@@ -83,8 +83,8 @@ A tid of -1 refers to the parent task.  Task 0 has no parent.
 *** Subscriptions
    child_task_exits
    any_task_exits
-   new_named_tasks
-   any_new_tasks
+   new_named_task
+   any_new_task
    create_failures
    any_results (subscribes to any_task_exits)
 *** Messages types sent
