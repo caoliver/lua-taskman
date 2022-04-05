@@ -4,11 +4,12 @@ local msg_count = volume/msg_size
 
 local function reader()
    local t=require 'taskman'
-   local s = os.clock()
+   local sw = require 'stopwatch'
+   local cpu_time, elapsed_time = sw 'cpu', sw 'wall'
    for i=1,msg_count do
       t.wait_message()
    end
-   print(os.clock()-s)
+   print(('CPU: %0.2fs  Elapsed: %0.2fs'):format(cpu_time(), elapsed_time()))
    t.change_global_flag(0, true);
 end
 
