@@ -4,6 +4,14 @@ struct circbuf {
     uint32_t size, head, tail;
 };
 
+#ifdef INLINE_CBUF_CODE
+#undef INLINE_CBUF_CODE
+#define INLINE_CBUF_CODE inline __attribute__((always_inline)) static
+#ifndef INCLUDE_CBUF_CODE
+#define INCLUDE_CBUF_CODE
+#endif
+#else
+#define INLINE_CBUF_CODE
 extern void cb_reset(struct circbuf *cb);
 extern void cb_init(struct circbuf *cb, uint32_t size);
 extern uint32_t cb_occupied(struct circbuf *cb);
@@ -12,15 +20,9 @@ extern void cb_produce(struct circbuf *cb, uint32_t used);
 extern void cb_release(struct circbuf *cb, uint32_t discard);
 extern uint32_t cb_head(struct circbuf *cb);
 extern uint32_t cb_tail(struct circbuf *cb);
-
-#if defined(INCLUDE_CBUF_CODE) || defined(INLINE_CBUF_CODE)
-
-#ifdef INLINE_CBUF_CODE
-#undef INLINE_CBUF_CODE
-#define INLINE_CBUF_CODE inline __attribute__((always_inline))
-#else
-#define INLINE_CBUF_CODE
 #endif
+
+#if defined(INCLUDE_CBUF_CODE)
 
 INLINE_CBUF_CODE void cb_reset(struct circbuf *cb)
 {
@@ -42,7 +44,7 @@ INLINE_CBUF_CODE uint32_t cb_occupied(struct circbuf *cb)
 
 INLINE_CBUF_CODE uint32_t cb_available(struct circbuf *cb)
 {
-    return cb->size - 1 - cb_occupied(cb);
+    return (cb->head - cb->tail - 1 + cb->size) % cb->size;
 }
 
 INLINE_CBUF_CODE void cb_produce(struct circbuf *cb, uint32_t used)
