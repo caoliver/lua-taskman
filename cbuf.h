@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 
 struct circbuf {
     uint32_t size, head, tail;
@@ -20,6 +21,8 @@ extern void cb_produce(struct circbuf *cb, uint32_t used);
 extern void cb_release(struct circbuf *cb, uint32_t discard);
 extern uint32_t cb_head(struct circbuf *cb);
 extern uint32_t cb_tail(struct circbuf *cb);
+extern uint32_t cb_split_read(struct circbuf *cb, uint32_t length);
+extern uint32_t cb_split_write(struct circbuf *cb, uint32_t length);
 #endif
 
 #if defined(INCLUDE_CBUF_CODE)
@@ -69,6 +72,18 @@ INLINE_CBUF_CODE uint32_t cb_head(struct circbuf *cb)
 INLINE_CBUF_CODE uint32_t cb_tail(struct circbuf *cb)
 {
     return cb->tail;
+}
+
+INLINE_CBUF_CODE uint32_t
+cb_split_read(struct circbuf *cb, uint32_t length)
+{
+    return cb->head + length <= cb->size ? length : cb->size - cb->head;
+}
+
+INLINE_CBUF_CODE uint32_t
+cb_split_write(struct circbuf *cb, uint32_t length)
+{
+    return cb->tail + length <= cb->size ? length : cb->size - cb->tail;
 }
 
 #endif
