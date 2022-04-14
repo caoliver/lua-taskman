@@ -578,8 +578,7 @@ bugout:
 			 task->incoming_queue.size);
 	free(task->task_name);
     }
-	
-    lua_pushstring(L, lua_tostring(newstate, -1));
+
     lua_close(newstate);
     return -1;
 }
@@ -760,7 +759,8 @@ static void *housekeeper(void *dummy)
 	default:
 	    errx(1, bad_msg, housekeeper_name);
 	}
-	lua_settop(L, 2);
+	// Ditch everything but the task dictionary.
+	lua_settop(L, 1);
     }
 
 fini:
