@@ -302,6 +302,15 @@ static void *new_thread(void *luastate)
     // Race?
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &previous_cancel);
     L = luastate;
+
+    // Be sure we have all the necessaries.
+    luaL_openlibs(L);
+    void *repl = dlsym(RTLD_DEFAULT, "lua_repl");
+    if (repl) {
+	lua_pushcfunction(L, repl);
+	lua_setglobal(L, "lua_repl");
+    }
+
     // Stack:
     //   3 - my index
     //   2 - program description table
@@ -469,12 +478,7 @@ static int create_task(uint8_t *taskdescr, int size,
 	show_errors = true;  // Bad underallocation.  Always complain.
 	goto bugout;
     }
-    luaL_openlibs(newstate);
-    void *repl = dlsym(RTLD_DEFAULT, "lua_repl");
-    if (repl) {
-	lua_pushcfunction(newstate, repl);
-	lua_setglobal(newstate, "lua_repl");
-    }
+
     // Add error handler
     lua_pushcfunction(newstate, LUAFN_NAME(traceback));
     // Unpack task description
