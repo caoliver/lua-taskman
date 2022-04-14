@@ -18,7 +18,7 @@
 #include "lua_head.h"
 
 // Include for debugging.
-// #include "show_stack.h"
+#include "show_stack.h"
 
 #include "twinmap.h"
 
@@ -312,9 +312,8 @@ static void *new_thread(void *luastate)
     }
 
     // Stack:
-    //   3 - my index
-    //   2 - program description table
-    //   1 - Traceback function
+    //   2 - my index
+    //   1 - program description table
     my_index = lua_tointeger(L, -1);
     struct task *task = &tasks[my_index];
     lua_pop(L, 1);
@@ -336,7 +335,7 @@ static void *new_thread(void *luastate)
     send_results = lua_toboolean(L, -1);
     lua_pop(L, 1);
 
-    // Fetch the program.
+    // Fetch the program.  (i.e. function, file, or string chunk)
     lua_getfield(L, -1, "program");
     int rc = 0;
     if (lua_type(L, -1) == LUA_TSTRING &&
@@ -366,7 +365,7 @@ static void *new_thread(void *luastate)
     // Setup arguments from program description.
     int arg_count = 0;
     while (1) {
-	lua_rawgeti(L, 2, ++arg_count);
+	lua_rawgeti(L, 1, ++arg_count);
 	if (lua_isnil(L, -1)) {
 	    lua_pop(L, 1);
 	    arg_count--;
@@ -374,7 +373,7 @@ static void *new_thread(void *luastate)
 	}
     }
     // We're done with the program description now.
-    lua_remove(L, 2);
+    lua_remove(L, 1);
 
     for (int i=0; i < num_tasks; i++)
 	if (tasks[i].nonce != 0 &&
@@ -386,6 +385,9 @@ static void *new_thread(void *luastate)
     int pcall_fails = 0;
     pthread_cleanup_push(cancellation_handler, NULL);
     pthread_setcancelstate(previous_cancel, NULL);
+    // Add error handler
+    lua_pushcfunction(L, LUAFN_NAME(traceback));
+    lua_insert(L, 1);
     // Call user program
     pcall_fails = lua_pcall(L, arg_count, LUA_MULTRET, 1);
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
@@ -405,7 +407,7 @@ static void *new_thread(void *luastate)
 	lua_insert(L, 2);
 	lua_pop(L, 1);
 	// Serialization might fail, so that's still a loss to us.
-	succeeded = !lua_pcall(L, 1, 1, 1);
+	succeeded = !lua_pcall(L, 1, 1, 0);
     }
 
 bugout:
@@ -479,14 +481,12 @@ static int create_task(uint8_t *taskdescr, int size,
 	goto bugout;
     }
 
-    // Add error handler
-    lua_pushcfunction(newstate, LUAFN_NAME(traceback));
     // Unpack task description
     lua_pushcfunction(newstate, freezer_thaw_buffer);
     lua_pushlightuserdata(newstate, (void *)taskdescr);
     lua_pushinteger(newstate, size);
     // This shouldn't happen unless freezer is broken.  If so, panic!
-    if (lua_pcall(newstate, 2,1,-4))
+    if (lua_pcall(newstate, 2,1,0))
 	errx(1, "Freezer decode failed: %s", lua_tostring(newstate, -1));
     task = &tasks[freetask];
     // pthread_cancel needs this for cleanup.
@@ -546,7 +546,6 @@ static int create_task(uint8_t *taskdescr, int size,
     task->parent_nonce = sender_nonce;
     // Requestor waits on this for replies from housekeeper.
     sem_init(&task->housekeeper_pending, 0, 0);
-    // Get the function, file, or string chunk.
     lua_pushinteger(newstate, freetask);
     if (pthread_create(&task->thread, NULL, new_thread,
 		       (void *)newstate) < 0) {
