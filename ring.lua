@@ -5,7 +5,7 @@ function task()
    me=t.get_my_name()
    f=require 'freezer'
    while not t.global_flag(quit_flag) do
-      msg,_,sender = t.wait_message(0.04)
+      local msg,_,sender = t.wait_message(0.04)
       if msg then f.thaw(msg)(sender) end
    end
 end
