@@ -18,7 +18,7 @@
 #include "lua_head.h"
 
 // Include for debugging.
-#include "show_stack.h"
+// #include "show_stack.h"
 
 #include "twinmap.h"
 
