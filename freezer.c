@@ -643,7 +643,7 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 	if (merge_dupl_strs)
 	    lua_remove(L, -2);
 	lua_pushvalue(L, -1);
-	// Save a reference the the restored code.
+	// Save a reference for the restored code.
 	lua_rawseti(L, SEEN_OBJECT_IDX, code_position);
 	// Process upvalue table.
 	// Each entry is either an upvalue index and a value, or
