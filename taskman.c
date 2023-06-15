@@ -543,7 +543,7 @@ static int create_task(uint8_t *taskdescr, int size,
     pthread_mutex_init(&task->incoming_mutex, NULL);
 
     task->parent_index = sender;
-    // Is this still valid.  What if this becomes zero?
+    // Is this still valid?  What if this becomes zero?
     task->parent_nonce = sender_nonce;
     // Requestor waits on this for replies from housekeeper.
     sem_init(&task->housekeeper_pending, 0, 0);
