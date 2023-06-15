@@ -77,7 +77,7 @@ A tid of -1 refers to the parent task.  Task 0 has no parent.
 ** send_message(message, tid)
 ** send_message_with_type(message, type, tid)
 ** broadcast_message(message, type, channel)
-24 channels from 0 to 23.  Higher are reserver for system.
+24 channels from 0 to 23.  Higher are reserved for system.
 ** set_reception(channel_mask)
 ** set_subscriptions(system_message_table)
 *** Subscriptions

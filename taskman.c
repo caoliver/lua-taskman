@@ -56,7 +56,8 @@
 #define MAX_PRIVATE_FLAG 30
 #define IMMUNITY (1U<<31)
 
-#define MAX_MSG_TYPE 4095
+#define BROADCAST (1 << 12)
+#define MAX_MSG_TYPE (BROADCAST - 1)
 #define CHANNEL_COUNT 24
 
 #define CHANNEL_MASK ((1<<CHANNEL_COUNT)-1)
@@ -1526,7 +1527,7 @@ LUAFN(broadcast_message)
 	if (i != my_index &&
 	    tasks[i].nonce != 0 &&
 	    tasks[i].subscriptions & channels)
-	    if (send_client_msg(&tasks[i], type | 0x1000 , msg, msglen) >=0)
+	    if (send_client_msg(&tasks[i], type | BROADCAST, msg, msglen) >=0)
 		send_count++;
     }
     lua_pushinteger(L, send_count);
