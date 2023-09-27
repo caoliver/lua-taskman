@@ -599,7 +599,7 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 			   unsigned int *seen_upvalue_count,
 			   bool merge_dupl_strs)
 {
-    if (*available < 0)
+    if (*available <= 0)
 	luaL_error(L, end_of_data);
 
     switch (**src) {
