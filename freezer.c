@@ -154,7 +154,7 @@ static int thaw_uint(const uint8_t *src, uint32_t *dst,
 {
     if (available < 1) return 0;
     *type = *src & 0xE0;
-    
+
     switch(src[0] & 0x1F) {
     case NUMTYPE_UINT8:
 	if (available < 2) return 0;
@@ -300,11 +300,24 @@ static void freeze_recursive(lua_State *L,
 		    lua_pop(L, 1);
 		}
 
-		if (array_size > 0)
+		if (array_size > 0) {
+		    // Save value at index zero if present since it
+		    // doesn't show up after the indexed portion
+		    // in LuaJIT.
+		    lua_rawgeti(L, index, 0);
+		    if (!lua_isnil(L, -1)) {
+			// Key is small int zero.
+			strbuff_addchar(catbuf, 0);
+			freeze_recursive(L, -1, seen_object_count,
+					 seen_upvalue_count, catbuf,
+					 merge_dupl_strs, strip_debug);
+		    }
+		    lua_pop(L, 1);
+
 		    // Big assumption: First non-indexed element
 		    // immediately follows the last indexed element.
 		    lua_pushinteger(L, array_size);
-		else
+		} else
 		    lua_pushnil(L);
 
 		// Emit hash portion of the table.
@@ -703,7 +716,7 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 	lua_call(L, 0, 1);
 	return;
     }
-    
+
     switch (**src & 0xE0) {
     case TYPE_NUMBER:
     case TYPE_NEGATIVE_INT: { // Number type.
@@ -787,7 +800,7 @@ static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
     if (len < sizeof(magic_header) ||
 	memcmp(magic_header, buf, sizeof(magic_header)))
 	luaL_error(L, invalid_data);
-    
+
     len -= sizeof(magic_header);
     buf += sizeof(magic_header);
 #endif
@@ -886,10 +899,10 @@ complex_type:
     }
 
     lua_newtable(L); // seen upvalues table
-    
+
     thaw_recursive(L, &buf, &len, &seen_object_count,
 		   &seen_upvalue_count, merge_dupl_strs);
-    
+
     if (len) luaL_error(L, extra);
 
     return 1;
