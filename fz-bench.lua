@@ -163,13 +163,13 @@ times=scale*25e4
 
 td={aardvark='one',bat='two',cheetah='three',dog='four',elephant='five',
     fish='six',giraffe='seven'}
-ebench('string->string', tdat)
-dbench('string->string', tdat)
+ebench('string->string', td)
+dbench('string->string', td)
 
 td={aardvark='animal',bat='animal',cheetah='animal',dog='animal',
     elephant='animal', fish='animal',giraffe='animal'}
-ebench('string->string dup values', tdat)
-dbench('string->string dup values', tdat)
+ebench('string->string dup values', td)
+dbench('string->string dup values', td)
 
 times=scale*5e5
 
