@@ -793,7 +793,7 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 
 static char extra[] = "Extra bytes";
 
-static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
+static void freezer_thaw_something(lua_State *L, uint8_t *buf, size_t *len)
 {
 #ifdef MAGIC_COOKIE
     size_t magiclen;
@@ -801,47 +801,47 @@ static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
 	memcmp(magic_header, buf, sizeof(magic_header)))
 	luaL_error(L, invalid_data);
 
-    len -= sizeof(magic_header);
+    *len -= sizeof(magic_header);
     buf += sizeof(magic_header);
 #endif
 
     // Thaw trivial values.
-    if (len > 0) {
+    if (*len > 0) {
 	switch(*buf) {
 	case VALUE_NIL:
-	    len--;
+	    --*len;
 	    lua_pushnil(L);
 	    break;
 	case VALUE_TRUE:
-	    len--;
+	    --*len;
 	    lua_pushboolean(L, true);
 	    break;
 	case VALUE_FALSE:
-	    len--;
+	    --*len;
 	    lua_pushboolean(L, false);
 	    break;
 	case TYPE_TABLE:
-	    if (len == 2 && buf[1] == TABLE_END) {
+	    if (*len >= 2 && buf[1] == TABLE_END) {
 		lua_newtable(L);
-		len = 0;
+		*len -= 2;
 		break;
 	    }
 	default:
 	    switch(*buf & 0xE0) {
 	    case TYPE_STRING: {
-		size_t avail = len;
+		size_t avail = *len;
 		uint32_t slen = thaw_string_header(L, &buf, &avail);
 		lua_pushlstring(L, (void *)buf, slen);
-		len = avail - slen;
+		*len = avail - slen;
 		break;
 	    }
 	    case TYPE_NUMBER:
 	    case TYPE_NEGATIVE_INT: { // Number type.
 		double result;
-		int used = thaw_num(buf, &result, len);
+		int used = thaw_num(buf, &result, *len);
 		if (!used)
 		    luaL_error(L, end_of_data);
-		len -= used;
+		*len -= used;
 		lua_pushnumber(L, result);
 		break;
 	    }
@@ -850,9 +850,7 @@ static int freezer_thaw_something(lua_State *L, uint8_t *buf, size_t len)
 	    }
 	}
 
-	if (len != 0)
-	    luaL_error(L, extra);
-	return 1;
+	return;
     }
 
 complex_type:
@@ -869,25 +867,25 @@ complex_type:
     uint32_t seen_object_count = 0;
     uint32_t seen_upvalue_count = 0;
 
-    if (len > 0 && *buf == MERGE_DUPL_STRS) {
+    if (*len > 0 && *buf == MERGE_DUPL_STRS) {
 	buf++;
-	len--;
+	--*len;
 	merge_dupl_strs = true;
     }
 
     // Make seen object table.
     // Install substitute value references if they are present.
     lua_newtable(L);
-    if (len > 0 && *buf == ALLOCATE_REFS) {
+    if (*len > 0 && *buf == ALLOCATE_REFS) {
 	buf++;
-	len--;
+	--*len;
 	uint8_t type;
-	int result = thaw_uint(buf, &seen_object_count, &type, len);
+	int result = thaw_uint(buf, &seen_object_count, &type, *len);
 	if (!result) luaL_error(L, end_of_data);
 	if (type != TYPE_UINT)
 	    luaL_error(L, invalid_data);
 	buf += result;
-	len -= result;
+	*len -= result;
 	for (unsigned int i = 1; i <= seen_object_count; i++) {
 	    lua_rawgeti(L, 2, i);
 	    if (lua_isnil(L, -1)) {
@@ -900,12 +898,8 @@ complex_type:
 
     lua_newtable(L); // seen upvalues table
 
-    thaw_recursive(L, &buf, &len, &seen_object_count,
+    thaw_recursive(L, &buf, len, &seen_object_count,
 		   &seen_upvalue_count, merge_dupl_strs);
-
-    if (len) luaL_error(L, extra);
-
-    return 1;
 }
 
 // Entry for passing pointers with lengths.
@@ -914,17 +908,20 @@ int freezer_thaw_buffer(lua_State *L)
 {
     size_t len;
     uint8_t *buf;
-    if (lua_islightuserdata(L, 1)) {
-	len = (size_t)luaL_checkinteger(L, 2);
-	buf = lua_touserdata(L, 1);
-	lua_remove(L, 1);
-    } else
-	buf = (uint8_t *)luaL_checklstring(L, 1, &len);
+    if ((buf = lua_touserdata(L, 1)) == NULL)
+	luaL_argerror(L, 1, "userdata expected");
+
+    len = (size_t)luaL_checkinteger(L, 2);
+    // Shift arguments.
+    lua_remove(L, 2);
 
     if (len < 0)
 	luaL_error(L, "Invalid length in freeze string");
 
-    return freezer_thaw_something(L, buf, len);
+    freezer_thaw_something(L, buf, &len);
+    if (len > 0)
+	luaL_error(L, extra);
+    return 1;
 }
 
 // Entry for handling Lua strings.
@@ -933,7 +930,10 @@ int freezer_thaw(lua_State *L)
     luaL_checktype(L, 1, LUA_TSTRING);
     size_t len;
     uint8_t *buf = (uint8_t *)lua_tolstring(L, 1, (size_t *)&len);
-    return freezer_thaw_something(L, buf, len);
+    freezer_thaw_something(L, buf, &len);
+    if (len > 0)
+	luaL_error(L, extra);
+    return 1;
 }
 
 static int clone(lua_State *L)
