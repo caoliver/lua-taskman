@@ -73,7 +73,7 @@ static uint64_t bswap_64(uint64_t n)
 #define STRLIT(...) (char []){__VA_ARGS__}
 
 // Include for debugging.
-// #include "show_stack.h"
+#include "show_stack.h"
 
 static int big_endian=0;
 
@@ -776,10 +776,23 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
     }
 }
 
-static char extra[] = "Extra bytes";
-
 static void freezer_thaw_something(lua_State *L, uint8_t *buf, size_t *len)
 {
+    size_t offset = 0;
+
+    switch(lua_type(L, 2)) {
+    case LUA_TNUMBER:
+    case LUA_TNIL:
+	offset = lua_tonumber(L, 2);
+	if (offset < 0 || offset != lua_tonumber(L, 2) || offset >= *len)
+	    luaL_error(L, "Offset must be an integer between 0 and %f",
+		       (double)*len - 1);
+	lua_remove(L, 2);
+    }
+
+    buf += offset;
+    *len -= offset;
+
     // Thaw trivial values.
     if (*len > 0) {
 	switch(*buf) {
@@ -893,10 +906,12 @@ int freezer_thaw_buffer(lua_State *L)
     if (len < 0)
 	luaL_error(L, "Invalid length in freeze string");
 
-    freezer_thaw_something(L, buf, &len);
-    if (len > 0)
-	luaL_error(L, extra);
-    return 1;
+    size_t available = len;
+    freezer_thaw_something(L, buf, &available);
+    if (available == 0)
+	return 1;
+    lua_pushinteger(L, len - available);
+    return 2;
 }
 
 // Entry for handling Lua strings.
@@ -905,10 +920,12 @@ int freezer_thaw(lua_State *L)
     luaL_checktype(L, 1, LUA_TSTRING);
     size_t len;
     uint8_t *buf = (uint8_t *)lua_tolstring(L, 1, (size_t *)&len);
-    freezer_thaw_something(L, buf, &len);
-    if (len > 0)
-	luaL_error(L, extra);
-    return 1;
+    size_t available = len;
+    freezer_thaw_something(L, buf, &available);
+    if (available == 0)
+	return 1;
+    lua_pushinteger(L, len - available);
+    return 2;
 }
 
 static int clone(lua_State *L)
