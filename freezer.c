@@ -75,13 +75,6 @@ static uint64_t bswap_64(uint64_t n)
 // Include for debugging.
 // #include "show_stack.h"
 
-// Do you want to start the serialization with a magic cookie?
-// #define MAGIC_COOKIE { 'L', 'F', 'R', 'Z' }
-
-#ifdef MAGIC_COOKIE
-unsigned char magic_header[] = MAGIC_COOKIE;
-#endif
-
 static int big_endian=0;
 
 #define SEEN_OBJECT_IDX 2
@@ -502,18 +495,10 @@ int freezer_freeze(lua_State *L)
 	goto complex_type;
     }
 
-#ifdef MAGIC_COOKIE
-    lua_pushlstring(L, magic_header, sizeof(magic_header));
-    lua_insert(L, -2);
-    lua_concat(L, 2);
-#endif
     return 1;
 
 complex_type:
     strbuff_buffinit (L, STRING_ACCUMULATOR_IDX, &catbuf);
-#ifdef MAGIC_COOKIE
-    strbuff_addlstring(&catbuf, (void *)magic_header, sizeof(magic_header));
-#endif
 
     if (lua_gettop(L) == 1)
 	lua_newtable(L); // No reference preload
@@ -795,16 +780,6 @@ static char extra[] = "Extra bytes";
 
 static void freezer_thaw_something(lua_State *L, uint8_t *buf, size_t *len)
 {
-#ifdef MAGIC_COOKIE
-    size_t magiclen;
-    if (len < sizeof(magic_header) ||
-	memcmp(magic_header, buf, sizeof(magic_header)))
-	luaL_error(L, invalid_data);
-
-    *len -= sizeof(magic_header);
-    buf += sizeof(magic_header);
-#endif
-
     // Thaw trivial values.
     if (*len > 0) {
 	switch(*buf) {
