@@ -8,6 +8,18 @@ do
    swapper()
    assert(joiner() == 'ba')
 end
+do
+   -- Test cursor on sequence of serialized values.
+   local tests = { 'evil', 15, 'wombat', print, 3, 4}
+   local accum = ''
+   table.foreach(tests, function(k,v) accum = accum..marshal(v, {print}) end)
+   local item,cursor = marshal.decode(accum, nil, {print})
+   for _, value in ipairs(tests) do
+      assert(item == value)
+      item, cursor = marshal.decode(accum, cursor, {print})
+   end
+end
+
 local k = { "tkey" }
 local a = { "a", "b", "c", [k] = "tval" }
 local s = assert(marshal.encode(a))
