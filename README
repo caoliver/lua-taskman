@@ -50,7 +50,7 @@ Freezer provides Lua C API style calls as:
 There is no C API for clone.
 
 Function freezer_thaw() takes a Lua string, and freezer_thaw_buffer expects
-a lightuserdata and its length.
+a userdata and its length.
 
 N.B. freezer_freeze expects to get the string.dump function via an upvalue.
 If you will serialize functions, you will need something like the following:
@@ -117,7 +117,7 @@ The `__freeze` hook may *NOT* refer to the receiver (i.e. `self` in the
 example) because this will cause deep recursion when upvalues are serialized.
 
 Note that in a real application, the user serializer would need to distinguish
-to sorts of data by type in order to determine appropriate handling.
+sorts of data by type in order to determine appropriate handling.
 
 Also, if the substitution or upvalues of the constructor function refer
 to previously seen special values, the produced serialization will be
