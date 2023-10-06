@@ -39,6 +39,6 @@ end
 t.set_subscriptions{child_task_exits=true}
 t.send_message(require'freezer'.freeze(job), 'task1')
 for _ in pairs(nexttask) do t.wait_message() end
-if t.get_my_name() == ':main:' then t.shutdown() end
+t.shutdown()
 
       
