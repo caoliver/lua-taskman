@@ -25,26 +25,29 @@ end
 local times
 scale=1
 
-local last_time
-function bench(name, encoder, decoder, show)
-   local help=encoder
-   if strip then
-      function help(td) return encoder(td, {}, false, strip) end
+do
+   local saved_time
+   function bench(name, encoder, decoder, data, set_std)
+      local times = scale * times
+      local help=encoder
+      if strip then
+	 function help(data) return encoder(data, {}, false, strip) end
+      end
+      collectgarbage()
+      s=stopwatch()
+      for i=1,times do
+	 decoder(help(data))
+      end
+      local this_time=s()
+      if set_std then
+	 saved_time=this_time
+      end
+      local microsecs = 1e6*this_time/times
+      print(('%s\t%.4fus\t%5d\t%.2f%%'):
+	 format(name, microsecs, #help(data),
+		100*(this_time-saved_time)/saved_time))
+      return microsecs
    end
-   collectgarbage()
-   s=stopwatch()
-   for i=1,times do
-      decoder(help(td))
-   end
-   this_time=s()
-   if not show then
-      last_time=this_time
-   end
-   local microsecs = 1e6*this_time/times
-   print(('%s\t%.4fus\t%5d\t%.2f%%'):
-	 format(name, microsecs, #help(td),
-		100*(this_time-last_time)/last_time))
-   return microsecs
 end
 
 nfz = package.loadlib('./newfreezer.so', 'luaopen_freezer')
@@ -64,62 +67,68 @@ values:
 	ratio of time taken to rh time]]
 
 function header(bench)
-   print (bench..' '..times..' times');
+   print (bench..' '..(times*scale)..' times');
 end
 
 local function null() end
 local function ident(x) return x end
 
-function ebench(head, tdata, skipcb)
+function ebench(head, data, skipcb)
    header('\n'..head..' encode')
-   td = tdata
-   bench('rh', rh.encode, null)
+   local td = data
+   bench('rh', rh.encode, null, data, true)
    if not skipcb then
-      bench('cb', cb.encode, null, true)
+      bench('cb', cb.encode, null, data)
    else
       print('cb\tN/A')
    end
-   local elapsedfz = bench('fz', fz.encode, null, true)
+   local elapsedfz = bench('fz', fz.encode, null, data)
    if nfz then
-      local elapsednfz = bench('new fz', nfz.encode, null, true)
+      local elapsednfz = bench('new fz', nfz.encode, null, data)
       local diffns = 1000*(elapsedfz-elapsednfz)
       print(("Improvement   %0.1fns (%0.2f%%)"):
 	    format(diffns, diffns/elapsedfz/10))
-      assert(fz.encode(td) == nfz.encode(td))
+      assert(fz.encode(data) == nfz.encode(data))
    end
 end
 
-function dbench(head, tdata, skipcb)
+function dbench(head, data, skipcb, check_table)
    header('\n'..head..' decode')
-   td=rh.encode(tdata)
-   bench('rh', ident, rh.decode)
+   local td=rh.encode(data)
+   bench('rh', ident, rh.decode, td, true)
    if not skipcb then
-      td=cb.encode(tdata)
-      bench('cb', ident, cb.decode, true)
+      td=cb.encode(data)
+      bench('cb', ident, cb.decode, td)
    else
       print('cb\tN/A')
    end
-   td=fz.encode(tdata,nil,false,strip)
-   local elapsedfz = bench('fz', ident, fz.decode, true)
+   td=fz.encode(data,nil,false,strip)
+   if check_table then
+      local decoded = fz.decode(td)
+      table.foreach(decoded,function(k,v) assert(data[k] == v) end)
+      table.foreach(data, function(k,v) assert(decoded[k] == v) end)
+   end
+   
+   local elapsedfz = bench('fz', ident, fz.decode, td)
    if nfz then
-      local elapsednfz = bench('new fz', ident, nfz.decode, true)
+      local elapsednfz = bench('new fz', ident, nfz.decode, td)
       local diffns = 1000*(elapsedfz-elapsednfz)
       print(("Improvement   %0.1fns (%0.2f%%)"):
-	    format(diffns, diffns/elapsedfz/10))
+	 format(diffns, diffns/elapsedfz/10))
    end
 end
 
-function edbench(head, tdata, skipcb)
+function edbench(head, data, skipcb)
    header('\n'..head)
-   bench('rh', rh.encode, rh.decode)
+   bench('rh', rh.encode, rh.decode, data, true)
    if not skipcb then
-      bench('cb', cb.encode, cb.decode, true)
+      bench('cb', cb.encode, cb.decode, data)
    else
       print('cb\tN/A')
    end
-   bench('fz', fz.encode, fz.decode, true)
+   bench('fz', fz.encode, fz.decode, data)
    if nfz then
-      bench('new fz', nfz.encode, nfz.decode, true)
+      bench('new fz', nfz.encode, nfz.decode, data)
       assert(fz.encode(td) == nfz.encode(td))
    end
 end
@@ -155,21 +164,30 @@ times=scale*5e5
 ebench('empty', {})
 dbench('empty', {})
 
-tdat={'one','two','three','four','five','six','seven'}
-ebench('num->string', tdat)
-dbench('num->string', tdat)
-
+td={'one','two','three','four','five','six','seven'}
+ebench('num->string', td)
+dbench('num->string', td, false, true)
 times=scale*25e4
 
 td={aardvark='one',bat='two',cheetah='three',dog='four',elephant='five',
     fish='six',giraffe='seven'}
 ebench('string->string', td)
-dbench('string->string', td)
+dbench('string->string', td, false, true)
+
+for k, v in ipairs {'one','two','three','four','five','six','seven'} do
+   td[k] = v
+end
+ebench('string->string + num->string', td)
+dbench('string->string + num->string', td, false, true)
 
 td={aardvark='animal',bat='animal',cheetah='animal',dog='animal',
     elephant='animal', fish='animal',giraffe='animal'}
 ebench('string->string dup values', td)
-dbench('string->string dup values', td)
+dbench('string->string dup values', td, false, true)
+
+for i=1,7 do table.insert(td, 'animal') end
+ebench('string->string + num->string dup values', td)
+dbench('string->string + num->string dup values', td, false, true)
 
 times=scale*5e5
 
@@ -184,11 +202,26 @@ function make_clique(n)
    return clique[1]
 end
 
+function make_clique_keys(n)
+   clique = {}
+   for i=1,n do table.insert(clique, {}) end
+   for _,from in pairs(clique) do
+      for _,to in pairs(clique)  do
+	 if from ~= to then from[to] = true end
+      end
+   end
+   return clique[1]
+end
+
 times=scale*2e5
 
 tdat=make_clique(8)
 ebench('cyclic references / 8 node clique', tdat, true)
 dbench('cyclic references / 8 node clique', tdat, true)
+
+tdat=make_clique_keys(8)
+ebench('cyclic references / 8 node clique on keys', tdat, true)
+dbench('cyclic references / 8 node clique on keys', tdat, true)
 
 --]]
 
