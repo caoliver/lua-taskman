@@ -144,15 +144,20 @@ dbench('small ints', 456)
 ebench('doubles', math.pi)
 dbench('doubles', math.pi)
 
-tdat=('#'):rep(1024)
-ebench('long strings', tdat)
-dbench('long strings', tdat)
-
 ebench('booleans', true)
 dbench('booleans', true)
 
 ebench('nil', nil)
 dbench('nil', nil)
+
+tdat=('#'):rep(1024)
+ebench('long strings', tdat)
+dbench('long strings', tdat)
+
+times=scale*1e5
+tdat=('#'):rep(32768)
+ebench('longer strings', tdat)
+dbench('longer strings', tdat)
 
 --]]
 
@@ -167,6 +172,7 @@ dbench('empty', {})
 td={'one','two','three','four','five','six','seven'}
 ebench('num->string', td)
 dbench('num->string', td, false, true)
+
 times=scale*25e4
 
 td={aardvark='one',bat='two',cheetah='three',dog='four',elephant='five',
@@ -188,6 +194,18 @@ dbench('string->string dup values', td, false, true)
 for i=1,7 do table.insert(td, 'animal') end
 ebench('string->string + num->string dup values', td)
 dbench('string->string + num->string dup values', td, false, true)
+
+times=scale*2e4
+
+td={}
+for i=1,2000 do td[i]='elephant' end
+ebench('num->string large', td)
+dbench('num->string large', td, false, true)
+
+td={}
+for i=1,200 do td[('key'):rep(10)..i] = ('value'):rep(10)..i end
+ebench('string->string large', td)
+dbench('string->string large', td, false, true)
 
 times=scale*5e5
 
