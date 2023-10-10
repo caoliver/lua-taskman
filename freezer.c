@@ -467,17 +467,12 @@ int freezer_freeze(lua_State *L)
 	break;
     }
     case LUA_TSTRING: {
-	size_t len;
 	char numbuf[9];
-	lua_pushnil(L);
-	if (lua_gettop(L) > 2)
-	    lua_replace(L, 2);
-	strbuff_buffinit (L, 2, &catbuf);
-	const char *str = lua_tolstring(L, 1, &len);
-	strbuff_addlstring(&catbuf, (void *)numbuf,
-			   freeze_uint(len, TYPE_STRING, (uint8_t *)numbuf));
-	strbuff_addlstring(&catbuf, str, len);
-	strbuff_pushresult(&catbuf);
+	size_t len = lua_objlen(L, 1);
+	int bytes = freeze_uint(len, TYPE_STRING, (uint8_t *)numbuf);
+	lua_pushlstring(L, numbuf, bytes);
+	lua_pushvalue(L, 1);
+	lua_concat(L, 2);
 	break;
     }
     case LUA_TTABLE: {
