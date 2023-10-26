@@ -39,6 +39,9 @@
 #include <lauxlib.h>
 #include <assert.h>
 #include <limits.h>
+#if defined(__APPLE__)
+#include <libkern/OSByteOrder.h>
+#endif
 
 #include "strbuff.h"
 
