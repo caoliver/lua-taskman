@@ -61,7 +61,7 @@ static uint32_t bswap_32(uint32_t n)
 
 static uint64_t bswap_64(uint64_t n)
 {
-    union { uint8_t ch[4]; uint64_t word; } pun = { .word = n };
+    union { uint8_t ch[8]; uint64_t word; } pun = { .word = n };
     SWAP_BYTES(pun.ch[0], pun.ch[7]);
     SWAP_BYTES(pun.ch[1], pun.ch[6]);
     SWAP_BYTES(pun.ch[2], pun.ch[5]);
