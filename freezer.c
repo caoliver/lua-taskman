@@ -776,7 +776,7 @@ static void thaw_recursive(lua_State *L, uint8_t **src, size_t *available,
 
 static void freezer_thaw_something(lua_State *L, uint8_t *buf, size_t *len)
 {
-    size_t offset = 0;
+    ssize_t offset = 0;
 
     switch(lua_type(L, 2)) {
     case LUA_TNUMBER:
@@ -892,7 +892,7 @@ complex_type:
 // Use of this is winds up a bit klugy.
 int freezer_thaw_buffer(lua_State *L)
 {
-    size_t len;
+    ssize_t len;
     uint8_t *buf;
     if ((buf = lua_touserdata(L, 1)) == NULL)
 	luaL_argerror(L, 1, "userdata expected");
