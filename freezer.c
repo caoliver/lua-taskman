@@ -76,7 +76,7 @@ static uint64_t bswap_64(uint64_t n)
 #define STRLIT(...) (char []){__VA_ARGS__}
 
 // Include for debugging.
-#include "show_stack.h"
+// #include "show_stack.h"
 
 static int big_endian=0;
 
@@ -533,11 +533,11 @@ complex_type:
     bool strip_debug;
     merge_dupl_strs = lua_toboolean(L, 3);     // Default false
     strip_debug = lua_toboolean(L, 4);         // Default false
-    if (lua_gettop(L) >= 5) {
-      lua_settop(L, 5);
-	lua_insert(L, 3);
-    } else
+    if (lua_gettop(L) >= 5)
+	lua_settop(L, 5);
+    else
 	lua_pushnil(L);
+    lua_insert(L, 3);
     lua_settop(L, 3);
 
     lua_newtable(L); // Seen upvalue table
