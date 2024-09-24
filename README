@@ -6,12 +6,15 @@ local freezer = require "freezer"
 Provides:
 ---------
 
-* s = freezer.freeze(v[, constants], ...)    - serializes a value to a byte
-                                               stream
-* t = freezer.thaw(s[, offset][, constants]) - deserializes a byte stream
-                                               to a value
-* t = freezer.clone(orig[, constants])       - deep clone a value (deep for
-                                               tables and functions)
+* s = freezer.freeze(v[, constants], ...)       - serializes a value to a byte
+                                                  stream
+* t, o = freezer.thaw(s[, offset][, constants]) - deserializes a byte stream
+                                                  to a value.  Value o is
+						  the offset for the next item
+						  in the stream or nil if it
+						  is exhausted.
+* t = freezer.clone(orig[, constants])          - deep clone a value (deep for
+                                                 tables and functions)
 
 
 Features:
