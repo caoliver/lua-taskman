@@ -1,6 +1,6 @@
  /*********************************************************************/
  /* This is a substitute for luaL buffers.  It improves upon them by  */
- /* using a expanding userdata buffer rather than the stack.  Thus,   */
+ /* using an expanding userdata buffer rather than the stack.  Thus,   */
  /* one can use strbuffs with recursive structure walkers where the   */
  /* luaL_buffer functions would corrupt the stack.  The buffer starts */
  /* using an internal fixed size array, so for sufficiently short     */
