@@ -35,7 +35,7 @@ twinmap.so: twinmap.o
 install: freezer.so taskman.so twinmap.so ffi+.lua
 	install -m 0755 *.so $(LIBPATH)
 	install -m 0644 ffi+.lua $(LUAPATH)
-	install -m 0644 twinmap.h cbuf.h $(INCPATH)
+	install -m 0644 twinmap.h strbuff.h cbuf.h $(INCPATH)
 	(cd $(LIBPATH) && ldconfig -N -l $(SHOBJS))
 
 clean:
